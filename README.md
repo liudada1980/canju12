@@ -269,7 +269,7 @@ GNU 通用公共许可证修改之，无论是版本 3 许可证，还是（按�
 
 - [Pikafish](https://github.com/official-pikafish/Pikafish) — 开源中国象棋引擎
 - [chessdb.cn](https://www.chessdb.cn) — 云端棋局数据库
-- 竹子系列软件作者 **Kalion** — 鼓励与启发
+- “竹子涨棋”、“竹子开局”等竹子系列软件作者 **Kalion** 
 - 天天象棋棋谱导出软件作者 **qwert**
 - 极简象棋作者 **夕幻**
 - 清弈作者 **步武**
