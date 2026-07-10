@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <!-- 删除这段重复的标题 -->
+    <!--
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="360dp"
+        android:text="📚 选择题库"
+        android:textSize="20sp"
+        android:textColor="#333333"
+        android:gravity="center"
+        android:layout_marginBottom="12dp"/>
+    -->
+
+    <!-- 保留提示文字 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="请选择要练习的题库："
+        android:gravity="center"
+        android:textSize="14sp"
+        android:textColor="#666666"
+        android:layout_marginBottom="12dp"/>
+
+    <ListView
+        android:id="@+id/listViewTiku"
+        android:layout_width="match_parent"
+        android:layout_height="300dp"
+        android:background="#F5F5F5"
+        android:divider="#E0E0E0"
+        android:dividerHeight="1dp"/>
+
+    <TextView
+        android:id="@+id/tvTotalInfo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="共 0 个题库"
+        android:textSize="12sp"
+        android:textColor="#999999"
+        android:gravity="center"
+        android:layout_marginTop="12dp"/>
+
+</LinearLayout>

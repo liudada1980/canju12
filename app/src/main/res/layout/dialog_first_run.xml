@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:maxHeight="480dp"
+    android:background="@drawable/dialog_bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="10dp"
+            android:layout_marginBottom="10dp">
+
+            <ImageView
+                android:layout_width="60dp" android:layout_height="60dp"
+                android:src="@mipmap/logo"
+                android:layout_marginStart="24dp"/>
+
+            <TextView
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="  一二残局：漂亮且耐用"
+                android:textSize="20sp" android:textColor="#000000"
+                android:textStyle="bold"/>
+        </LinearLayout>
+
+        <View android:layout_width="match_parent" android:layout_height="2dp"
+            android:background="#000000" android:layout_marginBottom="8dp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:layout_marginBottom="8dp">
+
+                    <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="行棋目标"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="执红：取胜；执黑：守和。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginBottom="10dp" android:layout_marginTop="2dp"/>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="走棋与标记"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="「复制」：复制当前局面的fen；\n「已会」：跳到下一题，统计为作对的题目；\n「不会」：题目进入错题本，统计为做错；\n「重来」-长按：载入上一题；\n「拆解」：进入拆解页面，暂不纳入统计。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginBottom="10dp" android:layout_marginTop="2dp"/>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="导入自定义题库"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="安卓文件夹路径：/storage/emulated/0/canju12/。软件会自动加载canju12/tiku文件夹内的txt题库，txt题库的格式为每行一个fen，用户可以往这个文件夹里填加题库txt。如果你想执后手，可以在fen前面填加2#这两个字符（特别适合用来练习需要守和的残局，这种情况需要把红棋调整为进攻方）。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginBottom="10dp" android:layout_marginTop="2dp"/>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="导入棋盘棋子素材"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="软件会自动读取canju12/uistyle文件夹素材文件。行棋声音为move.mp3；所有图片均为png格式，棋盘名为board，背景为room，红车马炮兵帅仕相分别为rr rn rc rp rk ra rb，黑车马炮卒将士象分别为br bn bc bp bk ba bb。默认棋盘尺寸为9:10，也支持天天象棋的678:750尺寸的棋盘。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginBottom="10dp" android:layout_marginTop="2dp"/>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="其他功能"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="双击左下角显示为红帅/黑将的图标进入错题本；\n双击右下角Readme进入致谢和使用说明。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginTop="2dp"/>
+
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textStyle="bold" android:textSize="16sp"
+                android:textColor="#FF0000" android:text="开源声明及开源网址"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="https://github.com/liudada1980/canju12\n一二残局 - 中国象棋残局刷题软件\nCopyright (C) 2026 刘霸天-长沙\n本程序是自由软件：你可以再分发之和/或依照由自由软件基金会发布的GNU 通用公共许可证修改之，无论是版本 3 许可证，还是（按你的决定）任何以后版都可以。发布该程序是希望它能有用，但是并无保障;甚至连可销售和符合某个特定的目的都不保证。\n请参看 GNU 通用公共许可证，了解详情。\n你应该随程序获得一份 GNU 通用公共许可证的复本。如果没有，请看&lt;https://www.gnu.org/licenses/&gt;。"
+                android:textSize="14sp" android:textColor="#888888"
+                android:layout_marginBottom="10dp" android:layout_marginTop="2dp"/>
+
+
+
+        </LinearLayout>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp"
+            android:background="#E0E0E0" android:layout_marginBottom="8dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="🔥🔥刘霸天为您加油！🔥🔥🔥"
+            android:textSize="16sp" android:textColor="#00008B"
+            android:gravity="center" android:layout_marginBottom="8dp"/>
+
+    </LinearLayout>
+</ScrollView>

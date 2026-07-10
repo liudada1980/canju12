@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mainLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/room"
+    android:paddingTop="12dp"
+    android:paddingBottom="12dp"
+    android:paddingLeft="24dp"
+    android:paddingRight="16dp">
+
+    <!-- 简化标题：只保留标题文字，背景透明 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="16dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="错题本"
+            android:textSize="24sp"
+            android:textColor="#000000"
+            android:gravity="center"
+            android:textStyle="bold"/>
+
+    </LinearLayout>
+
+    <!-- 操作按钮 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:paddingLeft="0dp"
+        android:paddingRight="0dp">
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="← 返回"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="4dp"/>
+
+        <Button
+            android:id="@+id/btnPaste"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📋 粘贴"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="4dp"/>
+
+        <Button
+            android:id="@+id/btnExport"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📤 导出"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="12dp"
+            android:paddingVertical="4dp"/>
+
+    </LinearLayout>
+
+    <!-- 错题列表 - RecyclerView -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:paddingLeft="0dp"
+        android:paddingRight="0dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:clipToPadding="false"
+        android:background="@android:color/transparent"/>
+
+</LinearLayout>

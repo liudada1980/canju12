@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/mainLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F5F5DC"
+    android:fitsSystemWindows="true">
+
+    <!-- 顶部标题（与main页面一致：textSize=24sp，textStyle=bold，fontFamily=sans-serif，maxLines=2） -->
+    <TextView
+        android:id="@+id/tv_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="老夫只是略知一二"
+        android:maxLines="2"
+        android:textSize="32sp"
+        android:textColor="#000000"
+        android:textStyle="bold"
+        android:fontFamily="sans-serif"
+        android:gravity="center"
+        android:layout_marginTop="30dp"
+        android:layout_marginBottom="5dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"/>
+
+    <!-- 加油标语（与main页面infoArea中shiju一致，16sp） -->
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:id="@+id/shiju"
+        android:text="刘霸天为您加油！"
+        android:maxLines="1"
+        android:textSize="16sp"
+        android:textColor="#000000"
+        android:gravity="center"
+        android:layout_marginTop="2dp"
+        android:paddingBottom="8dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/tv_title"/>
+
+    <!-- 象棋棋盘区域：H,9:10 表示高度由宽度按比例算出，宽度占满屏幕 -->
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:id="@+id/boardFrame"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintDimensionRatio="H,9:10"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/shiju">
+
+        <!-- 棋盘背景图 -->
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:id="@+id/ivBoard"
+            android:scaleType="fitCenter"/>
+
+        <!-- 棋子视图 -->
+        <com.canju12.zhuzicanju.ChessView
+            android:id="@+id/chessView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent"/>
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- 底部按钮区域 -->
+    <LinearLayout
+        android:id="@+id/btnRow"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/boardFrame">
+
+        <!-- 第1列：行棋指示器 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:layout_marginStart="36dp"
+            android:layout_marginEnd="24dp">
+
+            <ImageView
+                android:id="@+id/ivTurnIndicator"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:src="@drawable/bk"
+                android:scaleType="fitCenter"/>
+        </LinearLayout>
+
+        <!-- 第2列：返回 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:layout_marginStart="2dp">
+
+            <Button
+                android:id="@+id/btnBack"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="返回"
+                android:textColor="#000000"
+                android:textSize="16sp"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:ellipsize="none"
+                android:paddingHorizontal="4dp"
+                android:background="@drawable/button_rounded"/>
+        </LinearLayout>
+
+        <!-- 第3列：悔棋 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:layout_marginStart="2dp">
+
+            <Button
+                android:id="@+id/btnUndo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="悔棋"
+                android:textColor="#000000"
+                android:textSize="16sp"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:ellipsize="none"
+                android:paddingHorizontal="4dp"
+                android:background="@drawable/button_rounded"/>
+        </LinearLayout>
+
+        <!-- 第4列：重来 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:layout_marginStart="2dp">
+
+            <Button
+                android:id="@+id/btnReset"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="重来"
+                android:textColor="#000000"
+                android:textSize="16sp"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:ellipsize="none"
+                android:paddingHorizontal="4dp"
+                android:background="@drawable/button_rounded"/>
+        </LinearLayout>
+
+        <!-- 第5列：分析 -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:layout_marginStart="2dp"
+            android:layout_marginEnd="30dp">
+
+            <Button
+                android:id="@+id/btnAnalyze"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="分析"
+                android:textColor="#000000"
+                android:textSize="16sp"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:ellipsize="none"
+                android:paddingHorizontal="4dp"
+                android:background="@drawable/button_rounded"/>
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- 分析结果区域：填充棋盘和按钮下方的剩余空间 -->
+    <LinearLayout
+        android:id="@+id/analysisArea"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:orientation="horizontal"
+        android:background="#E8E8E8"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@+id/btnRow"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <!-- 云库查询：固定宽度，招法4汉字+评分8字符 -->
+        <ScrollView
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="#FFE8E8">
+
+            <TextView
+                android:id="@+id/tvCloudDb"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="云库"
+                android:textSize="12sp"
+                android:textColor="#333333"
+                android:fontFamily="sans-serif"/>
+        </ScrollView>
+
+        <!-- 皮卡鱼分析：占据中间剩余宽度 -->
+        <ScrollView
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="3"
+            android:background="#FFE8E8"
+            android:layout_marginStart="1dp"
+            android:layout_marginEnd="1dp">
+
+            <TextView
+                android:id="@+id/tvAnalyzeResult"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋"
+                android:textSize="12sp"
+                android:textColor="#333333"
+                android:fontFamily="sans-serif"/>
+        </ScrollView>
+
+        <!-- 招法列表：最右侧 -->
+        <ScrollView
+            android:id="@+id/svMoveList"
+            android:layout_width="84dp"
+            android:layout_height="match_parent"
+            android:background="#FFE8E8"
+            android:layout_marginStart="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:text="初始局面"
+            android:id="@+id/moveListContent" />
+
+        </ScrollView>
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
