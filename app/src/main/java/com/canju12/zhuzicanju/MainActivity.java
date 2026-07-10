@@ -712,37 +712,12 @@ public class MainActivity extends AppCompatActivity {
         // ====================================
     }
     /**
-     * 显示QQ群自定义弹窗
+     * 显示QQ群信息（原弹窗已移除，改为直接显示 Toast）
      */
     private void showQQGroupDialog() {
-        try {
-            AlertDialog.Builder builder = new AlertDialog.Builder(this);
-
-            // 加载自定义布局
-            View dialogView = getLayoutInflater().inflate(R.layout.dialog_qq_group, null);
-            builder.setView(dialogView);
-
-            // 设置按钮
-            builder.setPositiveButton("我知道了", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                }
-            });
-
-            // 创建并显示弹窗
-            AlertDialog dialog = builder.create();
-            dialog.show();
-
-            // 设置弹窗宽度（和题库弹窗一样大，占屏幕85%）
-            android.view.WindowManager.LayoutParams params = dialog.getWindow().getAttributes();
-            params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.85);
-            dialog.getWindow().setAttributes(params);
-
-        } catch (Exception e) {
-            Log.e("MainActivity", "显示QQ群弹窗失败: " + e.getMessage());
-            Toast.makeText(this, "显示失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        }
+        // QQ群对话框布局文件已移除，内容已整合到 README.md
+        // 这里改为直接显示QQ群号
+        Toast.makeText(this, "QQ群：635808985 · 1003608168 · 94846686", Toast.LENGTH_LONG).show();
     }
 
     private void setupChessView() {
