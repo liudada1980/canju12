@@ -586,6 +586,8 @@ public class MainActivity extends AppCompatActivity {
         btnNonono = findViewById(R.id.btnNonono);
         btnYesyes = findViewById(R.id.btnYesyes);
         tvQQGroup = findViewById(R.id.tvQQGroup);
+        // 动态设置Readme文字，从BuildConfig读取版本名
+        tvQQGroup.setText("Readme V" + BuildConfig.VERSION_NAME);
 
         ivTurnIndicator = findViewById(R.id.ivTurnIndicator);  // 确保这行存在
 
@@ -712,12 +714,44 @@ public class MainActivity extends AppCompatActivity {
         // ====================================
     }
     /**
-     * 显示QQ群信息（原弹窗已移除，改为直接显示 Toast）
+     * 显示致谢和使用说明对话框（使用 readme.xml 布局）
      */
     private void showQQGroupDialog() {
-        // QQ群对话框布局文件已移除，内容已整合到 README.md
-        // 这里改为直接显示QQ群号
-        Toast.makeText(this, "QQ群：635808985 · 1003608168 · 94846686", Toast.LENGTH_LONG).show();
+        try {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this, R.style.Theme_YourApp_Fullscreen);
+
+            View dialogView = getLayoutInflater().inflate(R.layout.readme, null);
+            builder.setView(dialogView);
+
+            builder.setPositiveButton("知道了", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface dialog, int which) {
+                    dialog.dismiss();
+                }
+            });
+
+            AlertDialog dialog = builder.create();
+
+            dialog.show();
+
+            // 设置对话框宽度为屏幕90%，高度自适应
+            android.view.WindowManager.LayoutParams params = dialog.getWindow().getAttributes();
+            params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.90);
+            params.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
+            dialog.getWindow().setAttributes(params);
+
+            // 设置按钮文字颜色
+            Button positiveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (positiveButton != null) {
+                positiveButton.setTextColor(getResources().getColor(android.R.color.holo_green_dark));
+                positiveButton.setTextSize(18);
+            }
+
+        } catch (Exception e) {
+            Log.e("MainActivity", "显示说明对话框失败: " + e.getMessage());
+            // 降级为Toast
+            Toast.makeText(this, "QQ群：635808985 · 1003608168 · 94846686", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void setupChessView() {
@@ -1219,6 +1253,27 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
                     TikuData selectedTiku = tikuList.get(position);
+
+                    // ===== 计算选关面板的高亮索引（在修改currentTiku之前判断） =====
+                    int highlightIndex;
+                    if (currentTiku != null && currentTiku.getName().equals(selectedTiku.getName())) {
+                        // 是当前题库 → 高亮当前题目
+                        highlightIndex = currentQuestionIndex;
+                    } else {
+                        // 不是当前题库 → 查找progress中已完成序号最大的题目
+                        int maxCompleted = pm.getMaxCompletedIndex(selectedTiku.getName());
+                        if (maxCompleted >= 0) {
+                            // 有完成记录 → 高亮最大已完成序号的下一题（即当前应做的题）
+                            // 如果下一题越界则高亮最大已完成序号本身
+                            highlightIndex = (maxCompleted + 1 < selectedTiku.getTotalCount())
+                                    ? maxCompleted + 1 : maxCompleted;
+                        } else {
+                            // 没有完成记录 → 高亮第1题
+                            highlightIndex = 0;
+                        }
+                    }
+                    // =====================================
+
                     currentTiku = selectedTiku;
                     tikuManager.setCurrentTiku(selectedTiku);
                     totalQuestions = selectedTiku.getTotalCount();
@@ -1228,7 +1283,7 @@ public class MainActivity extends AppCompatActivity {
                     // ================================================
 
                     // 显示选关页面
-                    showQuestionSelectorDialog(selectedTiku);
+                    showQuestionSelectorDialog(selectedTiku, highlightIndex);
                 }
             });
 
@@ -1413,9 +1468,19 @@ public class MainActivity extends AppCompatActivity {
 
 
     private void showQuestionSelectorDialog(TikuData tiku) {
+        showQuestionSelectorDialog(tiku, -1);
+    }
+
+    /**
+     * 显示选关对话框
+     * @param tiku 题库
+     * @param forceHighlightIndex 强制高亮的题目索引，-1表示自动计算
+     */
+    private void showQuestionSelectorDialog(TikuData tiku, int forceHighlightIndex) {
         try {
             // ===== 重新加载进度 =====
-            ProgressManager.getInstance(this).reload();
+            ProgressManager pm = ProgressManager.getInstance(this);
+            pm.reload();
             // ========================
             AlertDialog.Builder builder = new AlertDialog.Builder(this);
 
@@ -1429,16 +1494,26 @@ public class MainActivity extends AppCompatActivity {
             tvTikuTitle.setText("📖 " + tiku.getName());
             tvQuestionCount.setText("共 " + tiku.getTotalCount() + " 题");
 
-            // 创建适配器时传入最新的进度
-            // 使用一个保证在合法范围内的索引，确保当前题目被选中
-            int safeIndex = currentQuestionIndex;
-            if (tiku != null) {
-                int total = tiku.getTotalCount();
+            // ===== 计算高亮索引 =====
+            int safeIndex;
+            if (forceHighlightIndex >= 0) {
+                // 外部指定了高亮索引（从题库选择器传入）
+                safeIndex = forceHighlightIndex;
+            } else {
+                // 选关按钮：始终高亮当前题目
+                safeIndex = currentQuestionIndex;
+            }
+            // 边界保护
+            int total = tiku.getTotalCount();
+            if (total > 0) {
                 if (safeIndex < 0 || safeIndex >= total) {
-                    // 当前题号越界（例如已是最后一题之后），回退到最后一题高亮
                     safeIndex = Math.max(0, total - 1);
                 }
+            } else {
+                safeIndex = 0;
             }
+            // ========================
+
             QuestionGridAdapter adapter = new QuestionGridAdapter(
                     this, tiku, safeIndex);
             gridView.setAdapter(adapter);

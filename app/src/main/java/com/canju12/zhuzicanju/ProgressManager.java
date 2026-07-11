@@ -212,6 +212,25 @@ public class ProgressManager {
         return lastTiku != null && lastIndex >= 0;
     }
 
+    /**
+     * 获取指定题库中已完成序号最大的题目索引
+     * @param tikuName 题库名称
+     * @return 最大已完成索引，如果没有已完成题目则返回 -1
+     */
+    public int getMaxCompletedIndex(String tikuName) {
+        int maxIndex = -1;
+        String prefix = tikuName + "_";
+        for (String key : completedQuestions) {
+            if (key.startsWith(prefix)) {
+                try {
+                    int idx = Integer.parseInt(key.substring(prefix.length()));
+                    if (idx > maxIndex) maxIndex = idx;
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        return maxIndex;
+    }
+
     public void setLastPosition(String tikuName, int index) {
         lastTiku = tikuName;
         lastIndex = index;

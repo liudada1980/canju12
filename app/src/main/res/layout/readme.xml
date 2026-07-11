@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:maxHeight="500dp"
+    android:background="#FFFFFF">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="这是一个漂亮且坚固耐用的练残局APP，可以用自定义题库进行刷题，也可以通过导入声音背景棋盘棋子素材让刷题的过程变得舒服漂亮。常用功能如下："
+            android:textSize="16sp" android:textStyle="bold" android:textColor="#333333"
+            android:lineSpacingExtra="3dp" android:layout_marginBottom="12dp"/>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E0E0E0"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="行棋目标：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="执红：取胜；执黑：守和。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="自定义题库：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="安卓文件夹路径：/storage/emulated/0/canju12/。软件会自动加载canju12/tiku文件夹内的txt题库，txt题库的格式为每行一个fen，用户可以往这个文件夹里填加题库txt。如果你想执后手，可以在fen前面填加2#这两个字符（特别适合用来练习需要守和的残局，这种情况需要把红棋调整为进攻方）。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="自定义行棋声音、背景、棋盘、棋子：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="软件会自动读取canju12/uistyle文件夹素材文件。行棋声音为move.mp3；所有图片均为png格式，棋盘名为board，背景为room，红车马炮兵帅仕相分别为rr rn rc rp rk ra rb，黑车马炮卒将士象分别为br bn bc bp bk ba bb。默认棋盘尺寸为9:10，也支持天天象棋的678:750尺寸的棋盘。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="其他功能：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="双击左下角显示为红帅/黑将的图标进入错题本；\n双击右下角Readme进入致谢和使用说明。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="致谢（排名不分先后）：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="感谢竹子开局、竹子涨棋等竹子系列软件作者Kalion ，感谢天天象棋棋谱导出软件作者qwert，感谢极简象棋作者夕幻，感谢清弈作者步武，感谢弈潜作者青灯古卷，感谢你们在这个软件开发过程中给与的鼓励和支持，感谢你们写出一系列我喜欢的软件。感谢GLM，DeepSeek，千问，豆包等大模型，所有代码都是咨询大模型之后写的，特别感谢GLM和DeepSeek写了大部分代码。感谢夏添大佬及象棋训练智能化研究会QQ群提供的海量题库。感谢pikafish开发团队提供开源引擎。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+
+
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="其他想说的：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="刷题的过程非常枯燥，但是请记住：\n🔥🔥刘霸天为您加油！🔥🔥🔥\n如有侵权，请来QQ群635808985、QQ群1003608168、QQ群94846686找我，有问题也可以来这几个QQ群找我。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="开源网址及说明：" android:textSize="16sp" android:textColor="#FF0000"
+            android:textStyle="bold" android:layout_marginTop="12dp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="一二残局 - 中国象棋残局刷题软件\nCopyright (C) 2026 刘霸天-长沙\n本程序是自由软件：你可以再分发之和/或依照由自由软件基金会发布的GNU 通用公共许可证修改之，无论是版本 3 许可证，还是（按你的决定）任何以后版都可以。发布该程序是希望它能有用，但是并无保障;甚至连可销售和符合某个特定的目的都不保证。\n请参看 GNU 通用公共许可证，了解详情。\n你应该随程序获得一份 GNU 通用公共许可证的复本。如果没有，请看&lt;https://www.gnu.org/licenses/&gt;。"
+            android:textSize="14sp" android:textColor="#555555" android:lineSpacingExtra="2dp" android:layout_marginTop="4dp"/>
+
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="#E0E0E0" android:layout_marginTop="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="刘霸天于长沙" android:textSize="15sp" android:textColor="#0000FF"
+            android:textStyle="bold" android:gravity="right" android:layout_marginTop="12dp"/>
+
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="2026年6月20日" android:textSize="15sp" android:textColor="#0000FF"
+            android:textStyle="bold" android:gravity="right"/>
+
+    </LinearLayout>
+</ScrollView>
