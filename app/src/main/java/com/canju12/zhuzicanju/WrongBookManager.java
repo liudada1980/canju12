@@ -28,10 +28,17 @@ import java.util.List;
 
 public class WrongBookManager {
 
+    private final String bookName;
+    private final String fileName;
     private List<String> wrongList = new ArrayList<>();
 
     public WrongBookManager() {
-        // 无参数构造函数
+        this("错题本", "错题本.txt");
+    }
+
+    public WrongBookManager(String bookName, String fileName) {
+        this.bookName = bookName == null || bookName.isEmpty() ? "错题本" : bookName;
+        this.fileName = fileName == null || fileName.isEmpty() ? "错题本.txt" : fileName;
     }
 
     /**
@@ -82,7 +89,7 @@ public class WrongBookManager {
                 file.getParentFile().mkdirs();
             }
             OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), "UTF-8");
-            writer.write("# 错题本\n\n");
+            writer.write("# " + bookName + "\n\n");
             for (String fen : wrongList) {
                 writer.write(fen + "\n");
             }
@@ -99,7 +106,7 @@ public class WrongBookManager {
         File externalDir = Environment.getExternalStorageDirectory();
         File canju12Dir = new File(externalDir, "canju12");
         File tikuDir = new File(canju12Dir, "tiku");
-        return new File(tikuDir, "错题本.txt");
+        return new File(tikuDir, fileName);
     }
 
     public List<String> getList() {

@@ -54,13 +54,11 @@ public class ProgressManager {
     public static synchronized ProgressManager getInstance(Context context) {
         if (instance == null) {
             instance = new ProgressManager(context);
-        } else {
-            instance.loadProgress();
         }
         return instance;
     }
 
-    public void reload() { loadProgress(); }
+    public synchronized void reload() { loadProgress(); }
 
     private File getProgressFile() {
         File ext = Environment.getExternalStorageDirectory();
@@ -71,7 +69,7 @@ public class ProgressManager {
         return tikuName + "_" + index;
     }
 
-    public void loadProgress() {
+    public synchronized void loadProgress() {
         completedQuestions.clear();
         completedTikus.clear();
         totalPlayTime = 0;
@@ -117,7 +115,7 @@ public class ProgressManager {
                 completedTikus.size() + " 题库完成, 时间=" + totalPlayTime + "s");
     }
 
-    public void saveProgress() {
+    public synchronized void saveProgress() {
         try {
             File file = getProgressFile();
             File parent = file.getParentFile();
@@ -140,55 +138,60 @@ public class ProgressManager {
         }
     }
 
-    public void markCompleted(String tikuName, int index) {
-        completedQuestions.add(getKey(tikuName, index));
-        saveProgress();
+    public synchronized void markCompleted(String tikuName, int index) {
+        if (completedQuestions.add(getKey(tikuName, index))) {
+            saveProgress();
+        }
     }
 
-    public void markTikuCompleted(String tikuName) {
-        completedTikus.add(tikuName);
-        saveProgress();
+    public synchronized void markTikuCompleted(String tikuName) {
+        if (completedTikus.add(tikuName)) {
+            saveProgress();
+        }
     }
 
-    public boolean isCompleted(String tikuName, int index) {
+    public synchronized boolean isCompleted(String tikuName, int index) {
         return completedQuestions.contains(getKey(tikuName, index));
     }
 
-    public int getCompletedCount(String tikuName) {
+    public synchronized int getCompletedCount(String tikuName) {
         int count = 0;
         for (String key : completedQuestions) {
-            if (key.startsWith(tikuName + "_")) count++;
+            if (belongsToTiku(key, tikuName)) count++;
         }
         return count;
     }
 
-    public boolean isTikuFullyCompleted(String tikuName, int totalCount) {
+    public synchronized boolean isTikuFullyCompleted(String tikuName, int totalCount) {
         return getCompletedCount(tikuName) >= totalCount;
     }
 
-    public void resetTikuProgress(String tikuName) {
+    public synchronized void resetTikuProgress(String tikuName) {
         Set<String> toRemove = new HashSet<>();
         for (String key : completedQuestions) {
-            if (key.startsWith(tikuName + "_")) toRemove.add(key);
+            if (belongsToTiku(key, tikuName)) toRemove.add(key);
         }
-        completedQuestions.removeAll(toRemove);
-        completedTikus.remove(tikuName);
-        saveProgress();
+        boolean changed = completedQuestions.removeAll(toRemove);
+        changed |= completedTikus.remove(tikuName);
+        if (changed) {
+            saveProgress();
+        }
     }
 
-    public void addPlayTime(long seconds) {
+    public synchronized void addPlayTime(long seconds) {
+        if (seconds <= 0) return;
         totalPlayTime += seconds;
         saveProgress();
     }
 
     /** 检查是否需要显示解锁弹窗 */
-    public boolean needsUnlockNotification() {
+    public synchronized boolean needsUnlockNotification() {
         return isUnlocked() && !unlockNotified;
     }
 
-    public long getTotalPlayTime() { return totalPlayTime; }
+    public synchronized long getTotalPlayTime() { return totalPlayTime; }
 
-    public boolean isUnlocked() {
+    public synchronized boolean isUnlocked() {
         // 条件一：累计使用时长 ≥ 24 小时（86400 秒）
         if (totalPlayTime >= UNLOCK_TIME_SECONDS) return true;
         // 条件二：完成内置题库中的任何一个
@@ -198,17 +201,21 @@ public class ProgressManager {
         return false;
     }
 
-    public boolean isUnlockNotified() { return unlockNotified; }
-    public void setUnlockNotified(boolean v) { unlockNotified = v; saveProgress(); }
+    public synchronized boolean isUnlockNotified() { return unlockNotified; }
+    public synchronized void setUnlockNotified(boolean v) {
+        if (unlockNotified == v) return;
+        unlockNotified = v;
+        saveProgress();
+    }
 
-    public String getLastTiku() { return lastTiku; }
-    public int getLastIndex() { return lastIndex; }
+    public synchronized String getLastTiku() { return lastTiku; }
+    public synchronized int getLastIndex() { return lastIndex; }
 
     /**
      * 是否存在之前的载入记录（progress.txt 中有 lastTiku/lastIndex）
      * 用于判断是否为首次运行
      */
-    public boolean hasLastPosition() {
+    public synchronized boolean hasLastPosition() {
         return lastTiku != null && lastIndex >= 0;
     }
 
@@ -217,13 +224,13 @@ public class ProgressManager {
      * @param tikuName 题库名称
      * @return 最大已完成索引，如果没有已完成题目则返回 -1
      */
-    public int getMaxCompletedIndex(String tikuName) {
+    public synchronized int getMaxCompletedIndex(String tikuName) {
         int maxIndex = -1;
-        String prefix = tikuName + "_";
         for (String key : completedQuestions) {
-            if (key.startsWith(prefix)) {
+            if (belongsToTiku(key, tikuName)) {
                 try {
-                    int idx = Integer.parseInt(key.substring(prefix.length()));
+                    int separator = key.lastIndexOf('_');
+                    int idx = Integer.parseInt(key.substring(separator + 1));
                     if (idx > maxIndex) maxIndex = idx;
                 } catch (NumberFormatException ignored) {}
             }
@@ -231,7 +238,17 @@ public class ProgressManager {
         return maxIndex;
     }
 
-    public void setLastPosition(String tikuName, int index) {
+    private boolean belongsToTiku(String key, String tikuName) {
+        if (key == null || tikuName == null || tikuName.isEmpty()) return false;
+        int separator = key.lastIndexOf('_');
+        return separator > 0 && key.substring(0, separator).equals(tikuName);
+    }
+
+    public synchronized void setLastPosition(String tikuName, int index) {
+        if (index == lastIndex && ((lastTiku == null && tikuName == null)
+                || (lastTiku != null && lastTiku.equals(tikuName)))) {
+            return;
+        }
         lastTiku = tikuName;
         lastIndex = index;
         saveProgress();

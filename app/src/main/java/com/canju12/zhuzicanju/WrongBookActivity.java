@@ -22,6 +22,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
 import android.os.Environment;
+import android.content.res.Configuration;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
@@ -68,38 +69,80 @@ public class WrongBookActivity extends AppCompatActivity {
         btnPaste = findViewById(R.id.btnPaste);
         btnExport = findViewById(R.id.btnExport);
 
-        GridLayoutManager layoutManager = new GridLayoutManager(this, 2);
+        boolean isLandscape = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+        GridLayoutManager layoutManager = isLandscape
+                ? new GridLayoutManager(this, 2, RecyclerView.HORIZONTAL, false)
+                : new GridLayoutManager(this, 2);
         recyclerView.setLayoutManager(layoutManager);
 
-        int spacing = (int) (getResources().getDisplayMetrics().widthPixels * 0.01);
-        recyclerView.addItemDecoration(new SpacesItemDecoration(spacing));
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int outerPadding = isLandscape ? 0 : Math.max(1, Math.round(screenWidth * 0.02f));
+        // 竖屏布局：左右各 2%，中间列间距合计 2%。
+        recyclerView.setPadding(outerPadding,
+                recyclerView.getPaddingTop(),
+                outerPadding,
+                recyclerView.getPaddingBottom());
+
+        int rowSpace = isLandscape
+                ? Math.max(1, Math.round(screenHeight * 0.02f))
+                : Math.max(1, Math.round(screenWidth * 0.02f));
+        int columnSpace = isLandscape
+                ? Math.max(1, rowSpace / 2)
+                : Math.max(1, Math.round(screenWidth * 0.01f));
+        recyclerView.addItemDecoration(new SpacesItemDecoration(rowSpace, columnSpace, isLandscape));
     }
 
     public class SpacesItemDecoration extends RecyclerView.ItemDecoration {
-        private int space;
+        private final int verticalSpace;
+        private final int horizontalSpace;
+        private final boolean horizontal;
 
-        public SpacesItemDecoration(int space) {
-            this.space = space;
+        public SpacesItemDecoration(int verticalSpace, int horizontalSpace, boolean horizontal) {
+            this.verticalSpace = verticalSpace;
+            this.horizontalSpace = horizontalSpace;
+            this.horizontal = horizontal;
         }
 
         @Override
         public void getItemOffsets(Rect outRect, View view, RecyclerView parent, RecyclerView.State state) {
             int position = parent.getChildAdapterPosition(view);
-            if (position % 2 == 0) {
-                outRect.right = space / 1;
+            if (!horizontal) {
+                if (position % 2 == 0) {
+                    outRect.right = Math.max(1, verticalSpace / 2);
+                } else {
+                    outRect.left = Math.max(1, verticalSpace / 2);
+                }
+                outRect.bottom = verticalSpace;
             } else {
-                outRect.left = space / 1;
+                if (position % 2 == 0) {
+                    outRect.top = verticalSpace;
+                    outRect.bottom = verticalSpace / 2;
+                } else {
+                    outRect.top = verticalSpace / 2;
+                    outRect.bottom = verticalSpace;
+                }
+                outRect.right = horizontalSpace;
             }
-            outRect.bottom = space;
         }
     }
 
     private void calculateThumbnailSize() {
         int screenWidth = getResources().getDisplayMetrics().widthPixels;
-        thumbnailWidth = (int) (screenWidth * 0.44);
-        thumbnailHeight = (int) (thumbnailWidth * 0.9);
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        boolean isLandscape = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+        float boardAspect = chessView != null ? chessView.getBoardAspect() : 0.9f;
+        if (isLandscape) {
+            thumbnailHeight = Math.max(1, (int) (screenHeight * 0.47f));
+            thumbnailWidth = Math.max(1, Math.round(thumbnailHeight * boardAspect));
+        } else {
+            thumbnailWidth = Math.max(1, Math.round(screenWidth * 0.47f));
+            thumbnailHeight = Math.max(1, Math.round(thumbnailWidth / boardAspect));
+        }
 
-        Log.d("WrongBook", "屏幕宽度: " + screenWidth);
+        Log.d("WrongBook", "屏幕宽度: " + screenWidth + ", 屏幕高度: " + screenHeight);
         Log.d("WrongBook", "缩略图宽度: " + thumbnailWidth);
         Log.d("WrongBook", "缩略图高度: " + thumbnailHeight);
     }
@@ -111,30 +154,24 @@ public class WrongBookActivity extends AppCompatActivity {
     }
 
     private void setupRoomBackground() {
+        Bitmap roomBitmap = UiAssetCache.getRoom(this);
         try {
-            File externalDir = Environment.getExternalStorageDirectory();
-            File canju12Dir = new File(externalDir, "canju12");
-            File uiStyleDir = new File(canju12Dir, "uistyle");
-            File roomFile = new File(uiStyleDir, "room.png");
-
-            if (roomFile.exists()) {
-                Bitmap roomBitmap = android.graphics.BitmapFactory.decodeFile(roomFile.getAbsolutePath());
-                if (roomBitmap != null) {
-                    BitmapDrawable drawable = new BitmapDrawable(getResources(), roomBitmap);
-                    mainLayout.setBackground(drawable);
-                    return;
-                }
+            if (roomBitmap != null) {
+                mainLayout.setBackground(new BitmapDrawable(getResources(), roomBitmap));
             }
         } catch (Throwable e) {
             e.printStackTrace();
         }
-        try {
-            mainLayout.setBackgroundResource(R.drawable.room);
-        } catch (Throwable e) {
-            // 内置 room.png 在某些硬件上也可能解码失败，最终用纯色兜底，绝不退出
-            e.printStackTrace();
-            mainLayout.setBackgroundColor(android.graphics.Color.parseColor("#E8D5A2"));
+        if (roomBitmap == null) {
+            try {
+                mainLayout.setBackgroundResource(R.drawable.room);
+            } catch (Throwable e) {
+                // 内置 room.png 在某些硬件上也可能解码失败，最终用纯色兜底，绝不退出
+                e.printStackTrace();
+                mainLayout.setBackgroundColor(android.graphics.Color.parseColor("#E8D5A2"));
+            }
         }
+        UiThemeHelper.applyRoomButtonTheme(this, mainLayout, roomBitmap);
     }
 
     /**
@@ -171,13 +208,16 @@ public class WrongBookActivity extends AppCompatActivity {
      * 显示删除确认对话框
      */
     private void showDeleteDialog(int position) {
+        if (position < 0 || position >= manager.getCount()) {
+            return;
+        }
         new AlertDialog.Builder(this)
                 .setTitle("删除错题")
                 .setMessage("确定删除第 " + (position + 1) + " 题吗？")
                 .setPositiveButton("删除", (dialog, which) -> {
                     manager.remove(position);
                     loadData();
-                    Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
+                    ToastUtil.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -186,12 +226,18 @@ public class WrongBookActivity extends AppCompatActivity {
     private void pasteFromClipboard() {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard == null || !clipboard.hasPrimaryClip()) {
-            Toast.makeText(this, "剪贴板为空", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "剪贴板为空", Toast.LENGTH_SHORT).show();
             return;
         }
-        String text = clipboard.getPrimaryClip().getItemAt(0).getText().toString();
+        android.content.ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0 || clip.getItemAt(0) == null) {
+            ToastUtil.makeText(this, "clipboard is empty", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        CharSequence pastedText = clip.getItemAt(0).getText();
+        String text = pastedText == null ? "" : pastedText.toString();
         if (TextUtils.isEmpty(text)) {
-            Toast.makeText(this, "内容为空", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "内容为空", Toast.LENGTH_SHORT).show();
             return;
         }
         String[] lines = text.split("\n");
@@ -203,19 +249,23 @@ public class WrongBookActivity extends AppCompatActivity {
                 count++;
             }
         }
-        Toast.makeText(this, "添加了 " + count + " 条错题", Toast.LENGTH_SHORT).show();
+        ToastUtil.makeText(this, "添加了 " + count + " 条错题", Toast.LENGTH_SHORT).show();
         loadData();
     }
 
     private void exportWrongBook() {
+        if (getSystemService(Context.CLIPBOARD_SERVICE) == null) {
+            ToastUtil.makeText(this, "clipboard unavailable", Toast.LENGTH_SHORT).show();
+            return;
+        }
         String content = manager.export();
         if (TextUtils.isEmpty(content)) {
-            Toast.makeText(this, "错题本为空", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "错题本为空", Toast.LENGTH_SHORT).show();
             return;
         }
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(android.content.ClipData.newPlainText("错题本", content));
-        Toast.makeText(this, "已复制 " + manager.getCount() + " 条错题", Toast.LENGTH_SHORT).show();
+        ToastUtil.makeText(this, "已复制 " + manager.getCount() + " 条错题", Toast.LENGTH_SHORT).show();
     }
 
     /**

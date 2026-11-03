@@ -33,6 +33,11 @@ public class TikuSelectorAdapter extends BaseAdapter {
         this.inflater = LayoutInflater.from(context);
     }
 
+    public void setTikuList(List<TikuData> tikuList) {
+        this.tikuList = tikuList;
+        notifyDataSetChanged();
+    }
+
     @Override
     public int getCount() {
         return tikuList == null ? 0 : tikuList.size();
@@ -40,7 +45,8 @@ public class TikuSelectorAdapter extends BaseAdapter {
 
     @Override
     public Object getItem(int position) {
-        return tikuList == null ? null : tikuList.get(position);
+        return tikuList == null || position < 0 || position >= tikuList.size()
+                ? null : tikuList.get(position);
     }
 
     @Override
@@ -61,7 +67,12 @@ public class TikuSelectorAdapter extends BaseAdapter {
             holder = (ViewHolder) convertView.getTag();
         }
 
-        TikuData tiku = tikuList.get(position);
+        TikuData tiku = (TikuData) getItem(position);
+        if (tiku == null) {
+            holder.tvTikuName.setText("");
+            holder.tvTikuInfo.setText("");
+            return convertView;
+        }
         holder.tvTikuName.setText(tiku.getName());
         holder.tvTikuInfo.setText("共 " + tiku.getTotalCount() + " 题");
 

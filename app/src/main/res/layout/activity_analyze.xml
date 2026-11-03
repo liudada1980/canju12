@@ -32,7 +32,7 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:id="@+id/shiju"
-        android:text="刘霸天为您加油！"
+        android:text="一二残局"
         android:maxLines="1"
         android:textSize="16sp"
         android:textColor="#000000"
@@ -81,14 +81,14 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/boardFrame">
 
-        <!-- 第1列：行棋指示器 -->
+        <!-- 行棋指示器 -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:gravity="center"
             android:layout_marginStart="36dp"
-            android:layout_marginEnd="24dp">
+            android:layout_marginEnd="12dp">
 
             <ImageView
                 android:id="@+id/ivTurnIndicator"
@@ -98,19 +98,20 @@
                 android:scaleType="fitCenter"/>
         </LinearLayout>
 
-        <!-- 第2列：返回 -->
+        <!-- 五个按钮等宽横向排列 -->
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:layout_marginStart="2dp">
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginEnd="30dp">
 
             <Button
                 android:id="@+id/btnBack"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
                 android:text="返回"
                 android:textColor="#000000"
                 android:textSize="16sp"
@@ -119,22 +120,14 @@
                 android:ellipsize="none"
                 android:paddingHorizontal="4dp"
                 android:background="@drawable/button_rounded"/>
-        </LinearLayout>
-
-        <!-- 第3列：悔棋 -->
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:layout_marginStart="2dp">
 
             <Button
                 android:id="@+id/btnUndo"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="悔棋"
+                android:layout_weight="1"
+                android:layout_marginStart="2dp"
+                android:text="上步"
                 android:textColor="#000000"
                 android:textSize="16sp"
                 android:maxLines="1"
@@ -142,21 +135,28 @@
                 android:ellipsize="none"
                 android:paddingHorizontal="4dp"
                 android:background="@drawable/button_rounded"/>
-        </LinearLayout>
 
-        <!-- 第4列：重来 -->
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:layout_marginStart="2dp">
+            <Button
+                android:id="@+id/btnNext"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="2dp"
+                android:text="下步"
+                android:textColor="#000000"
+                android:textSize="16sp"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:ellipsize="none"
+                android:paddingHorizontal="4dp"
+                android:background="@drawable/button_rounded"/>
 
             <Button
                 android:id="@+id/btnReset"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="2dp"
                 android:text="重来"
                 android:textColor="#000000"
                 android:textSize="16sp"
@@ -165,22 +165,13 @@
                 android:ellipsize="none"
                 android:paddingHorizontal="4dp"
                 android:background="@drawable/button_rounded"/>
-        </LinearLayout>
-
-        <!-- 第5列：分析 -->
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center_horizontal"
-            android:layout_marginStart="2dp"
-            android:layout_marginEnd="30dp">
 
             <Button
                 android:id="@+id/btnAnalyze"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="2dp"
                 android:text="分析"
                 android:textColor="#000000"
                 android:textSize="16sp"
@@ -215,7 +206,7 @@
                 android:id="@+id/tvCloudDb"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="云库"
+                android:text="云库分析"
                 android:textSize="12sp"
                 android:textColor="#333333"
                 android:fontFamily="sans-serif"/>

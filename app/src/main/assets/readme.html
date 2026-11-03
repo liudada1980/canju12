@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>一二残局</title>
+<style>
+body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0;
+    padding: 20px 24px;
+    background: #FFF8F0;
+    color: #333;
+    font-size: 14px;
+    line-height: 1.7;
+}
+h1 {
+    font-size: 22px;
+    color: #1a1a1a;
+    border-bottom: 2px solid #D32F2F;
+    padding-bottom: 8px;
+    margin-bottom: 4px;
+}
+h1 + p {
+    color: #666;
+    font-size: 14px;
+    margin-top: 0;
+}
+hr {
+    border: none;
+    border-top: 1px solid #ccc;
+    margin: 16px 0;
+}
+h2 {
+    font-size: 18px;
+    color: #1565C0;
+    margin-top: 20px;
+    margin-bottom: 8px;
+}
+h3 {
+    font-size: 15px;
+    color: #333;
+    margin-top: 14px;
+    margin-bottom: 6px;
+}
+ul, ol {
+    padding-left: 20px;
+    margin: 4px 0;
+}
+p {
+    font-size: 14px;
+    line-height: 1.7;
+}
+li {
+    margin-bottom: 4px;
+    font-size: 14px;
+}
+code {
+    background: #f0f0f0;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 14px;
+    font-family: "Courier New", monospace;
+    color: #c62828;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 8px 0;
+    font-size: 14px;
+}
+th, td {
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    text-align: left;
+}
+th {
+    background: #E3F2FD;
+    font-weight: bold;
+}
+tr:nth-child(even) {
+    background: #FAFAFA;
+}
+strong {
+    color: #1a1a1a;
+}
+blockquote {
+    margin: 8px 0;
+    padding: 10px 14px;
+    background: #FFF3E0;
+    border-left: 4px solid #FF9800;
+    color: #444;
+    font-size: 14px;
+}
+blockquote p {
+    margin: 2px 0;
+}
+h4 {
+    font-size: 14px;
+    color: #1a1a1a;
+    margin: 12px 0 4px;
+}
+.declaration {
+    margin-top: 20px;
+    padding: 12px 16px;
+    background: #FFF3E0;
+    border-left: 4px solid #FF9800;
+    font-size: 14px;
+    color: #E65100;
+}
+.cheer {
+    color: #E65100;
+    font-weight: 700;
+    font-size: 16px;
+    margin: 6px 0;
+}
+.sign {
+    text-align: right;
+    color: #1565C0;
+    font-weight: 700;
+    font-size: 15px;
+    margin-top: 10px;
+}
+</style>
+</head>
+<body>
+<h1>一二残局</h1>
+<p>漂亮且耐用的残局APP · Copyright © 2026 刘霸天-长沙</p>
+<h3>🎯 行棋目标</h3>
+<ul>
+<li>执红：取胜</li>
+<li>执黑：守和</li>
+</ul>
+<h3>🕹️ 交互功能</h3>
+<ul>
+    <li><strong>「收藏」</strong>：收藏当前局面的FEN</li>
+    <li><strong>「收藏」（长按）</strong>：进入收藏夹</li>
+    <li><strong>「已会」</strong>：跳到下题，统计为作对的题目</li>
+    <li><strong>「不会」</strong>：题目进入错题本，统计为做错</li>
+    <li><strong>「重来」（长按）</strong>：载入上一题</li>
+    <li><strong>「拆解」</strong>：进入拆解页面，暂不纳入统计</li>
+    <li><strong>「行棋指示器-红帅/黑将图标」双击</strong>：复制当前局面的FEN</li>
+    <li><strong>「行棋指示器-红帅/黑将图标」长按</strong>：进入错题本</li>
+    <li><strong>「版本号」长按</strong>：打开说明书和致谢</li>
+    <li><strong>「某个内置题库」长按</strong>：隐藏这个题库</li>
+    <li><strong>「某个外置题库」长按</strong>：删除这个题库</li>
+    <li><strong>「缩略图」长按</strong>：删除收藏夹或错题本的题目</li>
+</ul>
+<h3>📚 自定义题库</h3>
+<ul>
+<li>安卓文件夹路径：<code>/storage/emulated/0/canju12/</code></li>
+<li>软件会自动加载 <code>canju12/tiku</code> 文件夹内的 txt 题库，txt 题库的格式为每行一个 fen，用户可以往这个文件夹里填加题库 txt</li>
+<li>如果你想执后手，可以在 fen 前面填加 <code>2#</code> 这两个字符（特别适合用来练习需要守和的残局，这种情况需要把红棋调整为进攻方）</li>
+<li>FEN 后面加一个空格，然后出现的第一个汉字及其后面的部分会被解析成棋局标题</li>
+</ul>
+<h3>📘 一二残局专属题库说明</h3>
+<p>一二残局以精选小题库为主，软件内置的每一份题库，都经过云库或引擎验证，完美适配「一二残局」。软件验证采用「亚规」与「简易中规」混合的方法：</p>
+<ul>
+<li>若某 FEN 在云库中可查询到 → 采用云库<code>AsiaRule</code>（亚规）返回的结果</li>
+<li>若某 FEN 无法在云库中查询到 → 采用引擎的 <code>ChineseRule</code>（简易中规）验证</li>
+</ul>
+<h3>📋 题库格式示例</h3>
+<blockquote>
+<p><code>txt</code> 文件，每行一个题目，路径：<code>/storage/emulated/0/canju12/tiku</code>，支持以下四种写法：</p>
+</blockquote>
+<ol>
+<li><code>执红</code>
+  <ul>
+    <li>格式：<code>FEN</code></li>
+    <li>棋手执红，引擎执黑</li>
+    <li>获胜算过关</li>
+    <li>以题库的序号作为标题</li>
+  </ul>
+</li>
+<li><code>执黑</code>
+  <ul>
+    <li>格式：<code>2#FEN</code>（在 FEN 前面加 <code>2#</code> 这两个字符）</li>
+    <li>棋手执黑，引擎执红</li>
+    <li>和棋或获胜算过关</li>
+    <li>以题目的序号作为标题</li>
+  </ul>
+</li>
+<li><code>执红带标题</code>
+  <ul>
+    <li>格式：<code>FEN 中文标题</code>（FEN 后面接一个空格，再接中文标题）</li>
+    <li>棋手执红，引擎执黑</li>
+    <li>获胜算过关</li>
+    <li>以序号和中文标题作为标题</li>
+  </ul>
+</li>
+<li><code>执黑带标题</code>
+  <ul>
+    <li>格式：<code>2#FEN 中文标题</code>（FEN 前面加 <code>2#</code>，FEN 后面接空格再接中文标题）</li>
+    <li>棋手执黑，引擎执红</li>
+    <li>和棋或获胜算过关</li>
+    <li>以序号和中文标题作为标题</li>
+  </ul>
+</li>
+</ol>
+<h3>🎨 自定义行棋声音、背景、棋盘、棋子</h3>
+<ul>
+<li>软件会自动读取 <code>canju12/uistyle</code> 文件夹素材文件</li>
+<li>行棋声音为 <code>move.mp3</code></li>
+<li>所有图片均为 png 格式</li>
+<li>棋盘名为 <code>board</code>，背景为 <code>room</code></li>
+<li>红车马炮兵帅仕相分别为 <code>rr rn rc rp rk ra rb</code></li>
+<li>黑车马炮卒将士象分别为 <code>br bn bc bp bk ba bb</code></li>
+<li>默认棋盘尺寸为 <code>9:10</code>，也支持天天象棋的 <code>678:750</code> 尺寸的棋盘</li>
+</ul>
+<h3>🎯 训练方法</h3>
+<ul>
+    <li>定期七轮突破题库（1200题以内的题库）</li>
+    <li>第一轮每天1个小时，记下完成的天数</li>
+    <li>第二轮天数减半，第三轮天数再减半</li>
+    <li>直到一天内可以完成所有题目，进行七轮循环</li>
+</ul>
+<h3>🙏 致谢（排名不分先后）</h3>
+<ul>
+<li>感谢竹子开局、竹子涨棋等竹子系列软件作者 Kalion</li>
+<li>感谢天天象棋棋谱导出软件作者 qwert</li>
+<li>感谢极简象棋作者夕幻</li>
+<li>感谢清弈作者步武</li>
+<li>感谢弈潜作者青灯古卷</li>
+<li>感谢 GLM、Codex、DeepSeek、千问、豆包等大模型，特别感谢 GLM、Codex 和 DeepSeek 写了大部分代码</li>
+<li>感谢夏添大佬及象棋训练智能化研究会 QQ 群提供的海量题库</li>
+<li>感谢 pikafish 开发团队提供开源引擎</li>
+</ul>
+<h3>💬 其他想说的</h3>
+<p>刷题的过程非常枯燥，但是请记住：</p>
+<p class="cheer">🔥🔥刘霸天为您加油！🔥🔥🔥</p>
+<p>QQ 群 <code>1003608168</code>、QQ 群 <code>635808985</code>、QQ 群 <code>94846686</code></p>
+<h3>📜 开源网址及说明</h3>
+<p><code>https://github.com/liudada1980/canju12</code><br>
+一二残局 - 中国象棋残局刷题软件<br>
+Copyright (C) 2026 刘霸天-长沙<br>
+本程序是自由软件：你可以再分发之和/或依照由自由软件基金会发布的 GNU 通用公共许可证修改之，无论是版本 3 许可证，还是（按你的决定）任何以后版都可以。发布该程序是希望它能有用，但是并无保障；甚至连可销售和符合某个特定的目的都不保证。<br>
+请参看 GNU 通用公共许可证，了解详情。<br>
+你应该随程序获得一份 GNU 通用公共许可证的复本。如果没有，请看 <code>https://www.gnu.org/licenses/</code>。</p>
+<hr>
+<div class="sign">刘霸天于长沙<br>2026年6月20日</div>
+</body>
+</html>

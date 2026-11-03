@@ -33,10 +33,7 @@ public class QuestionGridAdapter extends BaseAdapter {
         this.tiku = tiku;
         this.currentIndex = currentIndex;
         this.inflater = LayoutInflater.from(context);
-// ===== 每次创建适配器时重新加载进度 =====
         this.progressManager = ProgressManager.getInstance(context);
-        this.progressManager.reload();
-        // ======================================
 
     }
 
@@ -52,7 +49,8 @@ public class QuestionGridAdapter extends BaseAdapter {
 
     @Override
     public Object getItem(int position) {
-        return tiku == null ? null : tiku.getFENByIndex(position);
+        return tiku == null || position < 0 || position >= tiku.getTotalCount()
+                ? null : tiku.getFENByIndex(position);
     }
 
     @Override
@@ -70,6 +68,13 @@ public class QuestionGridAdapter extends BaseAdapter {
             convertView.setTag(holder);
         } else {
             holder = (ViewHolder) convertView.getTag();
+        }
+
+        if (tiku == null || position < 0 || position >= tiku.getTotalCount()) {
+            holder.tvQuestionNumber.setText("");
+            holder.tvQuestionNumber.setSelected(false);
+            holder.tvQuestionNumber.setActivated(false);
+            return convertView;
         }
 
         holder.tvQuestionNumber.setText(String.valueOf(position + 1));

@@ -20,8 +20,13 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
-import android.media.MediaPlayer;
+import android.graphics.RectF;
+import android.media.AudioAttributes;
+import android.media.SoundPool;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -60,6 +65,11 @@ public class ChessView extends View {
     }
     private BoardScheme activeScheme = BoardScheme.A;
 
+    /** 返回当前棋盘的宽高比 (designW / designH)，用于横屏布局计算棋盘宽度 */
+    public float getBoardAspect() {
+        return activeScheme.aspect();
+    }
+
     private int side = 1; // 1为红方，-1为黑方
     private boolean mode = true; // true人机，false人人，默认人机
 
@@ -73,6 +83,109 @@ public class ChessView extends View {
     // 值为 [fromY, fromX]，null 表示该方当前没有高亮棋子。
     private int[] redHighlight = null;   // 红方高亮棋子
     private int[] blackHighlight = null; // 黑方高亮棋子
+    private int[] lastMoveFrom = null;
+    private int[] lastMoveTo = null;
+    private float highlightPhase = 0f;
+    private long highlightLastFrameMs = 0L;
+    private static final float HIGHLIGHT_ROTATIONS_PER_SECOND = 1f / 8f;
+    private static final long HIGHLIGHT_FRAME_DELAY_MS = 40L;
+    private final Handler highlightHandler = new Handler(Looper.getMainLooper());
+    private boolean highlightAnimatorRunning = false;
+    private final Rect highlightDirtyRect = new Rect();
+    private final Runnable highlightAnimator = new Runnable() {
+        @Override
+        public void run() {
+            if (!hasAnimatedHighlight()) {
+                highlightAnimatorRunning = false;
+                highlightLastFrameMs = 0L;
+                return;
+            }
+            long now = SystemClock.uptimeMillis();
+            if (highlightLastFrameMs == 0L) {
+                highlightLastFrameMs = now;
+            }
+            float elapsedSeconds = Math.min(0.1f,
+                    (now - highlightLastFrameMs) / 1000f);
+            highlightLastFrameMs = now;
+            highlightPhase = (highlightPhase
+                    + elapsedSeconds * HIGHLIGHT_ROTATIONS_PER_SECOND) % 1f;
+            invalidateHighlightRegion();
+            highlightHandler.postDelayed(this, HIGHLIGHT_FRAME_DELAY_MS);
+        }
+    };
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (moveSoundEnabled) {
+            preloadMoveSound();
+        }
+        updateHighlightAnimatorState();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        highlightHandler.removeCallbacks(highlightAnimator);
+        highlightAnimatorRunning = false;
+        highlightLastFrameMs = 0L;
+        releaseMoveSound();
+        super.onDetachedFromWindow();
+    }
+
+    private boolean hasAnimatedHighlight() {
+        return redHighlight != null || blackHighlight != null || lastMoveTo != null;
+    }
+
+    private void updateHighlightAnimatorState() {
+        if (!hasAnimatedHighlight()) {
+            highlightHandler.removeCallbacks(highlightAnimator);
+            highlightAnimatorRunning = false;
+            highlightLastFrameMs = 0L;
+            return;
+        }
+        if (!isAttachedToWindow() || highlightAnimatorRunning) {
+            return;
+        }
+        highlightAnimatorRunning = true;
+        highlightLastFrameMs = SystemClock.uptimeMillis();
+        highlightHandler.post(highlightAnimator);
+    }
+
+    private void invalidateHighlightRegion() {
+        if (chessWidth <= 0 || getWidth() <= 0 || getHeight() <= 0) {
+            postInvalidateOnAnimation();
+            return;
+        }
+
+        highlightDirtyRect.setEmpty();
+        unionHighlightDirty(highlightDirtyRect, redHighlight);
+        unionHighlightDirty(highlightDirtyRect, blackHighlight);
+        unionHighlightDirty(highlightDirtyRect, lastMoveFrom);
+        unionHighlightDirty(highlightDirtyRect, lastMoveTo);
+
+        if (highlightDirtyRect.isEmpty()) {
+            postInvalidateOnAnimation();
+            return;
+        }
+
+        highlightDirtyRect.left = Math.max(0, highlightDirtyRect.left);
+        highlightDirtyRect.top = Math.max(0, highlightDirtyRect.top);
+        highlightDirtyRect.right = Math.min(getWidth(), highlightDirtyRect.right);
+        highlightDirtyRect.bottom = Math.min(getHeight(), highlightDirtyRect.bottom);
+        postInvalidateOnAnimation(highlightDirtyRect.left, highlightDirtyRect.top,
+                highlightDirtyRect.right, highlightDirtyRect.bottom);
+    }
+
+    private void unionHighlightDirty(Rect dirty, int[] pos) {
+        if (pos == null || pos[0] < 0 || pos[1] < 0) return;
+        int drawX = isBoardFlipped ? 8 - pos[1] : pos[1];
+        int drawY = isBoardFlipped ? 9 - pos[0] : pos[0];
+        int centerX = offsetX + drawX * chessWidth;
+        int centerY = offsetY + drawY * chessWidth;
+        int radius = Math.max(2, (int) Math.ceil(chessWidth * 0.68f));
+        dirty.union(centerX - radius, centerY - radius,
+                centerX + radius, centerY + radius);
+    }
     // AI对战时人类所执的一方（1红/-1黑）；-2表示未限定（自由练习/分析模式，按当前走棋方限制）
     private int humanSide = -2;
     // =====================================================================
@@ -81,6 +194,22 @@ public class ChessView extends View {
     private Paint paintMove = new Paint();       // move画笔
     private Paint paintFrom = new Paint();       // 选中棋子画圆画笔
     private Paint paintArrow = new Paint();      // 绘制箭头的画笔
+    private final Paint auraPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint moveOriginRingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint moveOriginDotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Rect boardSrcRect = new Rect();
+    private final Rect boardDstRect = new Rect();
+    private final Rect pieceDstRect = new Rect();
+    private final RectF auraArcRect = new RectF();
+
+    private SoundPool moveSoundPool;
+    private int moveSoundId = 0;
+    private boolean moveSoundLoaded = false;
+    private boolean moveSoundLoadStarted = false;
+    private boolean moveSoundEnabled = false;
+    private boolean moveSoundUsingExternal = false;
+    private boolean moveSoundFallbackStarted = false;
+    private long lastMoveSoundPlayMs = 0L;
 
     // 棋子图片资源
     private Bitmap redRook;      // 红车 rr
@@ -98,6 +227,8 @@ public class ChessView extends View {
     private Bitmap blackKing;    // 黑将 bk
     private Bitmap blackAdvisor; // 黑士 ba
     private Bitmap blackElephant; // 黑象 bb
+    private int auraRedColor = Color.rgb(198, 40, 40); // #c62828
+    private int auraBlackColor = Color.rgb(10, 10, 10); // #0a0a0a
     private boolean isBoardFlipped = false;
 
     // ===== Pikafish 对战相关字段 =====
@@ -160,7 +291,10 @@ public class ChessView extends View {
         selectChess[1] = -1;
         redHighlight = null;
         blackHighlight = null;
+        lastMoveFrom = null;
+        lastMoveTo = null;
         invalidate();
+        updateHighlightAnimatorState();
     }
 
     public void setOnGameListener(OnGameListener listener) {
@@ -232,58 +366,27 @@ public class ChessView extends View {
      */
     public void loadChessImages() {
         try {
-            Bitmap external;
-
             // ========== 红方棋子 ==========
-            external = loadImageFromExternal("rr.png");
-            redRook = (external != null) ? external : decodeResourceSafely(R.drawable.rr);
-
-            external = loadImageFromExternal("rn.png");
-            redKnight = (external != null) ? external : decodeResourceSafely(R.drawable.rn);
-
-            external = loadImageFromExternal("rc.png");
-            redCannon = (external != null) ? external : decodeResourceSafely(R.drawable.rc);
-
-            external = loadImageFromExternal("rp.png");
-            redPawn = (external != null) ? external : decodeResourceSafely(R.drawable.rp);
-
-            external = loadImageFromExternal("rk.png");
-            redKing = (external != null) ? external : decodeResourceSafely(R.drawable.rk);
-
-            external = loadImageFromExternal("ra.png");
-            redAdvisor = (external != null) ? external : decodeResourceSafely(R.drawable.ra);
-
-            external = loadImageFromExternal("rb.png");
-            redElephant = (external != null) ? external : decodeResourceSafely(R.drawable.rb);
+            redRook = UiAssetCache.getBitmap(context, "rr.png", R.drawable.rr);
+            redKnight = UiAssetCache.getBitmap(context, "rn.png", R.drawable.rn);
+            redCannon = UiAssetCache.getBitmap(context, "rc.png", R.drawable.rc);
+            redPawn = UiAssetCache.getBitmap(context, "rp.png", R.drawable.rp);
+            redKing = UiAssetCache.getBitmap(context, "rk.png", R.drawable.rk);
+            redAdvisor = UiAssetCache.getBitmap(context, "ra.png", R.drawable.ra);
+            redElephant = UiAssetCache.getBitmap(context, "rb.png", R.drawable.rb);
 
             // ========== 黑方棋子 ==========
-            external = loadImageFromExternal("br.png");
-            blackRook = (external != null) ? external : decodeResourceSafely(R.drawable.br);
-
-            external = loadImageFromExternal("bn.png");
-            blackKnight = (external != null) ? external : decodeResourceSafely(R.drawable.bn);
-
-            external = loadImageFromExternal("bc.png");
-            blackCannon = (external != null) ? external : decodeResourceSafely(R.drawable.bc);
-
-            external = loadImageFromExternal("bp.png");
-            blackPawn = (external != null) ? external : decodeResourceSafely(R.drawable.bp);
-
-            external = loadImageFromExternal("bk.png");
-            blackKing = (external != null) ? external : decodeResourceSafely(R.drawable.bk);
-
-            external = loadImageFromExternal("ba.png");
-            blackAdvisor = (external != null) ? external : decodeResourceSafely(R.drawable.ba);
-
-            external = loadImageFromExternal("bb.png");
-            blackElephant = (external != null) ? external : decodeResourceSafely(R.drawable.bb);
+            blackRook = UiAssetCache.getBitmap(context, "br.png", R.drawable.br);
+            blackKnight = UiAssetCache.getBitmap(context, "bn.png", R.drawable.bn);
+            blackCannon = UiAssetCache.getBitmap(context, "bc.png", R.drawable.bc);
+            blackPawn = UiAssetCache.getBitmap(context, "bp.png", R.drawable.bp);
+            blackKing = UiAssetCache.getBitmap(context, "bk.png", R.drawable.bk);
+            blackAdvisor = UiAssetCache.getBitmap(context, "ba.png", R.drawable.ba);
+            blackElephant = UiAssetCache.getBitmap(context, "bb.png", R.drawable.bb);
 
             // ========== 棋盘背景 ==========
-            external = loadImageFromExternal("board.png");
-            boardBitmap = (external != null) ? external : decodeResourceSafely(R.drawable.board);
-
-            external = loadImageFromExternal("room.png");
-            roomBitmap = (external != null) ? external : decodeResourceSafely(R.drawable.room);
+            boardBitmap = UiAssetCache.getBoard(context);
+            roomBitmap = UiAssetCache.getRoom(context);
         } catch (Throwable t) {
             // 兜底：任何意外都不应让构造/init 崩溃导致程序退出
             Log.e(TAG, "loadChessImages 整体异常: " + t.getMessage());
@@ -455,9 +558,9 @@ public class ChessView extends View {
             int top = offsetY - my;
             int right = offsetX + chessWidth * 8 + mx;
             int bottom = offsetY + chessWidth * 9 + my;
-            Rect srcRect = new Rect(0, 0, boardBitmap.getWidth(), boardBitmap.getHeight());
-            Rect dstRect = new Rect(left, top, right, bottom);
-            canvas.drawBitmap(boardBitmap, srcRect, dstRect, null);
+            boardSrcRect.set(0, 0, boardBitmap.getWidth(), boardBitmap.getHeight());
+            boardDstRect.set(left, top, right, bottom);
+            canvas.drawBitmap(boardBitmap, boardSrcRect, boardDstRect, null);
         } catch (Throwable t) {
             Log.e(TAG, "drawBoardBackground 异常: " + t.getMessage());
         }
@@ -497,9 +600,9 @@ public class ChessView extends View {
                     int right = centerX + pieceSize / 2;
                     int bottom = centerY + pieceSize / 2;
 
-                    Rect rect = new Rect(left, top, right, bottom);
+                    pieceDstRect.set(left, top, right, bottom);
                     try {
-                        canvas.drawBitmap(bitmap, null, rect, paint);
+                        canvas.drawBitmap(bitmap, null, pieceDstRect, paint);
                     } catch (Throwable t) {
                         Log.e(TAG, "drawChessPieces 单子绘制异常: " + t.getMessage());
                     }
@@ -513,8 +616,15 @@ public class ChessView extends View {
      * 红方选中棋子时清除黑方高亮，黑方选中棋子时清除红方高亮。
      */
     private void drawHighlights(Canvas canvas) {
-        drawHighlight(canvas, redHighlight);
-        drawHighlight(canvas, blackHighlight);
+        drawMoveOrigin(canvas, lastMoveFrom);
+        // 同一时刻只保留一个棋子光圈：选中棋子优先，否则显示最后落子位置。
+        if (redHighlight != null) {
+            drawParticleAuraAt(canvas, redHighlight, false);
+        } else if (blackHighlight != null) {
+            drawParticleAuraAt(canvas, blackHighlight, false);
+        } else {
+            drawParticleAuraAt(canvas, lastMoveTo, true);
+        }
     }
 
     /**
@@ -539,22 +649,99 @@ public class ChessView extends View {
         int centerX = offsetX + drawX * chessWidth;
         int centerY = offsetY + drawY * chessWidth;
 
-        float circleRadius = pieceSize / 2f;
+        drawParticleAura(canvas, centerX, centerY, pieceSize, false);
+    }
 
-        float newRadius = circleRadius * 0.98f;
+    private void drawParticleAuraAt(Canvas canvas, int[] pos, boolean strong) {
+        if (pos == null || pos[0] < 0 || pos[1] < 0) return;
+        int drawX = isBoardFlipped ? 8 - pos[1] : pos[1];
+        int drawY = isBoardFlipped ? 9 - pos[0] : pos[0];
+        float centerX = offsetX + drawX * chessWidth;
+        float centerY = offsetY + drawY * chessWidth;
+        int piece = chessBoard[pos[0]][pos[1]];
+        float pieceScale = 0.98f;
+        float pieceSize = chessWidth * pieceScale;
+        if (piece == 0) {
+            pieceSize = chessWidth * 0.82f;
+        }
+        drawParticleAura(canvas, centerX, centerY, pieceSize, strong);
+    }
 
-        Paint fillPaint = new Paint();
-        fillPaint.setStyle(Paint.Style.FILL);
-        fillPaint.setColor(Color.parseColor("#3300BFFF")); // 半透蓝
-        canvas.drawCircle(centerX, centerY, newRadius, fillPaint);
+    private void drawParticleAura(Canvas canvas, float centerX, float centerY,
+                                  float pieceSize, boolean strong) {
+        float pulse = 1f + 0.018f * (float) Math.sin(highlightPhase * Math.PI * 2);
+        // Keep the effect just outside the piece edge so it does not spill into
+        // neighboring intersections or get clipped at the board boundary.
+        // The stroke's inner edge should meet the outside edge of the piece.
+        float strokeReference = Math.max(1.6f, chessWidth * (strong ? 0.018f : 0.015f));
+        float radius = Math.max(1f, pieceSize * 0.5f - strokeReference * 0.5f);
 
-        paintFrom.setStyle(Paint.Style.STROKE);
-        paintFrom.setStrokeWidth(Math.max(3, chessWidth / 12));
-        paintFrom.setColor(Color.parseColor("#FF00BFFF")); // 亮蓝
-        paintFrom.setAntiAlias(true);
+        float fullCircle = (float) (Math.PI * 2.0);
+        float phaseAngle = highlightPhase * fullCircle;
+        float halfArc = (float) Math.PI - 0.08f;
+        float tailArc = (float) Math.PI * 0.82f;
+        float baseStroke = strokeReference;
+        float headStroke = Math.max(baseStroke * 2.6f, chessWidth * (strong ? 0.048f : 0.041f));
 
-        // 棋盘四周已有边距，边缘棋子的高亮圆可完整画出，无需裁剪
-        canvas.drawCircle(centerX, centerY, newRadius, paintFrom);
+        // The two opposing heads divide the ring into a black and a white
+        // half. Each head leaves a narrowing tail, producing the yin-yang
+        // style rotating light instead of two isolated dots.
+        float auraBaseStroke = baseStroke * 1.5f;
+        float auraHeadStroke = headStroke * 1.5f;
+        drawAuraTail(canvas, centerX, centerY, radius, phaseAngle,
+                halfArc, tailArc, auraBlackColor, auraBaseStroke, auraHeadStroke,
+                strong ? 255 : 225);
+        drawAuraTail(canvas, centerX, centerY, radius, phaseAngle + (float) Math.PI,
+                halfArc, tailArc, auraRedColor, auraBaseStroke,
+                auraHeadStroke, strong ? 255 : 225);
+
+    }
+
+    private void drawAuraTail(Canvas canvas, float centerX, float centerY,
+                              float radius, float headAngle, float halfArc,
+                              float tailArc, int color, float baseStroke,
+                              float headStroke, int alpha) {
+        auraPaint.setStyle(Paint.Style.STROKE);
+        auraPaint.setStrokeCap(Paint.Cap.ROUND);
+        auraArcRect.set(centerX - radius, centerY - radius,
+                centerX + radius, centerY + radius);
+
+        int segments = 18;
+        for (int i = 0; i < segments; i++) {
+            float t0 = i / (float) segments;
+            float t1 = (i + 1) / (float) segments;
+            float start = (float) Math.toDegrees(headAngle - t1 * tailArc);
+            float sweep = (float) Math.toDegrees((t1 - t0) * tailArc);
+            float width = baseStroke + (headStroke - baseStroke) * (1f - t0) * (1f - t0);
+            int segmentAlpha = Math.max(20, (int) (alpha * (0.35f + 0.65f * (1f - t0))));
+            auraPaint.setStrokeWidth(width);
+            auraPaint.setColor(Color.argb(segmentAlpha,
+                    Color.red(color), Color.green(color), Color.blue(color)));
+            canvas.drawArc(auraArcRect, start, sweep, false, auraPaint);
+        }
+
+        auraPaint.setStrokeWidth(headStroke);
+        auraPaint.setColor(Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)));
+        canvas.drawArc(auraArcRect,
+                (float) (Math.toDegrees(headAngle) - Math.toDegrees(halfArc * 0.12f)),
+                (float) Math.toDegrees(halfArc * 0.24f), false, auraPaint);
+    }
+
+    private void drawMoveOrigin(Canvas canvas, int[] pos) {
+        if (pos == null || pos[0] < 0 || pos[1] < 0) return;
+        int drawX = isBoardFlipped ? 8 - pos[1] : pos[1];
+        int drawY = isBoardFlipped ? 9 - pos[0] : pos[0];
+        float centerX = offsetX + drawX * chessWidth;
+        float centerY = offsetY + drawY * chessWidth;
+        moveOriginRingPaint.setStyle(Paint.Style.STROKE);
+        moveOriginRingPaint.setStrokeWidth(Math.max(1.5f, chessWidth * 0.012f));
+        moveOriginRingPaint.setColor(Color.argb(220, 255, 255, 255));
+        moveOriginRingPaint.setShadowLayer(chessWidth * 0.025f, 0f, 0f, Color.argb(150, 255, 255, 255));
+        canvas.drawCircle(centerX, centerY, chessWidth * 0.115f, moveOriginRingPaint);
+        moveOriginRingPaint.clearShadowLayer();
+        moveOriginDotPaint.setStyle(Paint.Style.FILL);
+        moveOriginDotPaint.setColor(Color.WHITE);
+        canvas.drawCircle(centerX, centerY, Math.max(2f, chessWidth * 0.045f), moveOriginDotPaint);
     }
 
     /**
@@ -573,6 +760,7 @@ public class ChessView extends View {
         side = -side;
         isBoardFlipped = !isBoardFlipped;
         invalidate();
+        updateHighlightAnimatorState();
     }
 
     /**
@@ -658,14 +846,16 @@ public class ChessView extends View {
                         int capturedPiece = chessBoard[toChess[0]][toChess[1]];
                         lastMoveWasCapture = (capturedPiece != 0);  // 记录是否吃子
 
-                        playMoveSound();  // 播放音效
-
                         chessBoard[toChess[0]][toChess[1]] = chessBoard[fromChess[0]][fromChess[1]];
                         chessBoard[fromChess[0]][fromChess[1]] = 0;
 
+                        playMoveSound();  // 只在棋子实际落下后播放音效
+
                         recordMove(fromChess[0], fromChess[1], toChess[0], toChess[1], capturedPiece);
 
-                        // 落子后，本方高亮跟随到落子位置，保持到对手选中棋子
+                        // 落子后保留起点和终点标记
+                        lastMoveFrom = new int[]{fromChess[0], fromChess[1]};
+                        lastMoveTo = new int[]{toChess[0], toChess[1]};
                         setHighlight(side, toChess[0], toChess[1]);
 
                         side = -side;
@@ -709,6 +899,8 @@ public class ChessView extends View {
         selectChess[1] = dataX;
         fromChess[0] = dataY;
         fromChess[1] = dataX;
+        // 选中新的棋子后，清除上一次落子的光圈，避免两个光圈同时出现。
+        lastMoveTo = null;
         setHighlight(side, dataY, dataX);
     }
 
@@ -725,6 +917,7 @@ public class ChessView extends View {
             redHighlight = null;    // 黑方选中，清除红方高亮
         }
         invalidate();
+        updateHighlightAnimatorState();
     }
 
 
@@ -925,15 +1118,72 @@ public class ChessView extends View {
         selectChess[1] = -1;
         redHighlight = null;
         blackHighlight = null;
-
         // 移除历史记录
         moveHistory.remove(moveHistory.size() - 1);
         capturedHistory.remove(capturedHistory.size() - 1);
 
+        // 悔棋后恢复撤销后剩余的最后一手光影；没有历史时清除光影。
+        restoreLastMoveHighlight();
+
         // 刷新画面
         invalidate();
+        updateHighlightAnimatorState();
 
         return true;
+    }
+
+    /**
+     * 按指定走法恢复起点标记和终点光圈，供拆解页面浏览棋谱使用。
+     */
+    public void restoreMoveHighlight(int fromY, int fromX, int toY, int toX) {
+        if (fromY < 0 || fromY > 9 || fromX < 0 || fromX > 8
+                || toY < 0 || toY > 9 || toX < 0 || toX > 8) {
+            clearSelection();
+            return;
+        }
+        isSelect = false;
+        selectChess[0] = -1;
+        selectChess[1] = -1;
+        fromChess[0] = -1;
+        fromChess[1] = -1;
+        toChess[0] = -1;
+        toChess[1] = -1;
+        redHighlight = null;
+        blackHighlight = null;
+        lastMoveFrom = new int[]{fromY, fromX};
+        lastMoveTo = new int[]{toY, toX};
+
+        int movedPiece = chessBoard[toY][toX];
+        if (movedPiece > 0) {
+            redHighlight = new int[]{toY, toX};
+        } else if (movedPiece < 0) {
+            blackHighlight = new int[]{toY, toX};
+        }
+        invalidate();
+        updateHighlightAnimatorState();
+    }
+
+    /** 恢复当前内部走法历史中最后一手的光影。 */
+    public void restoreLastMoveHighlight() {
+        if (moveHistory.isEmpty()) {
+            clearSelection();
+            return;
+        }
+        int[] move = moveHistory.get(moveHistory.size() - 1);
+        restoreMoveHighlight(move[0], move[1], move[2], move[3]);
+    }
+
+    /** 从 UCI 走法恢复指定步骤的光影。 */
+    public void restoreMoveHighlightFromUci(String uci) {
+        if (uci == null || uci.length() < 4) {
+            clearSelection();
+            return;
+        }
+        int fromX = uci.charAt(0) - 'a';
+        int fromY = 9 - (uci.charAt(1) - '0');
+        int toX = uci.charAt(2) - 'a';
+        int toY = 9 - (uci.charAt(3) - '0');
+        restoreMoveHighlight(fromY, fromX, toY, toX);
     }
 // ========== 双将面对面判断辅助函数 ==========
 
@@ -1354,8 +1604,11 @@ public class ChessView extends View {
         isSelect = false;
         redHighlight = null;
         blackHighlight = null;
+        lastMoveFrom = null;
+        lastMoveTo = null;
         clearHistory();  // 清空历史
         invalidate();
+        updateHighlightAnimatorState();
     }
 
 
@@ -1367,8 +1620,8 @@ public class ChessView extends View {
      * @param fen 初始FEN字符串
      */
     public void setCurrentInitialFEN(String fen) {
-        this.currentInitialFEN = fen;
-        Log.d(TAG, "设置初始FEN: " + fen);
+        this.currentInitialFEN = normalizeFenString(fen);
+        Log.d(TAG, "设置初始FEN: " + this.currentInitialFEN);
     }
 
     /**
@@ -1420,6 +1673,8 @@ public class ChessView extends View {
         toChess[1] = -1;
         redHighlight = null;
         blackHighlight = null;
+        lastMoveFrom = null;
+        lastMoveTo = null;
 
         // 清空历史记录
         clearHistory();
@@ -1428,51 +1683,36 @@ public class ChessView extends View {
 
         // 刷新画面
         invalidate();
+        updateHighlightAnimatorState();
     }
     /**
      * 根据FEN字符串设置棋盘
      * @param fen 中国象棋FEN字符串
      */
-    public void setBoardByFEN(String fen) {
-        setBoardByFEN(fen, false);
+    public boolean setBoardByFEN(String fen) {
+        return setBoardByFEN(fen, false);
     }
 
-    public void setBoardByFEN(String fen, boolean flipped) {
+    public boolean setBoardByFEN(String fen, boolean flipped) {
         if (fen == null || fen.isEmpty()) {
-            resetBoard();
-            return;
+            Log.e(TAG, "FEN is empty");
+            return false;
         }
 
         try {
-            // 先清空棋盘
-            for (int y = 0; y < 10; y++) {
-                for (int x = 0; x < 9; x++) {
-                    chessBoard[y][x] = 0;
-                }
+            String normalizedFen = normalizeFenString(fen);
+            int[][] strictBoard = parseStrictFENToBoard(normalizedFen);
+            if (strictBoard == null) {
+                Log.e(TAG, "Invalid FEN: " + fen);
+                return false;
             }
 
-            // 解析FEN
-            String[] parts = fen.split(" ");
-            String boardPart = parts[0];
-
-            String[] rows = boardPart.split("/");
-            for (int y = 0; y < 10 && y < rows.length; y++) {
-                String row = rows[y];
-                int x = 0;
-                for (int i = 0; i < row.length() && x < 9; i++) {
-                    char c = row.charAt(i);
-                    if (Character.isDigit(c)) {
-                        int emptyCount = Character.getNumericValue(c);
-                        x += emptyCount;
-                    } else {
-                        int chessValue = getChessValueFromFENChar(c);
-                        if (chessValue != 0) {
-                            chessBoard[y][x] = chessValue;
-                        }
-                        x++;
-                    }
-                }
+            String[] parts = normalizedFen.split("\\s+");
+            if (parts.length < 2 || (!"w".equals(parts[1]) && !"b".equals(parts[1]))) {
+                Log.e(TAG, "Invalid FEN fields: " + fen);
+                return false;
             }
+            chessBoard = strictBoard;
 
             // 解析走棋方
             if (parts.length > 1) {
@@ -1497,17 +1737,28 @@ public class ChessView extends View {
             toChess[1] = -1;
             redHighlight = null;
             blackHighlight = null;
+            lastMoveFrom = null;
+            lastMoveTo = null;
 
             clearHistory();
-            setCurrentInitialFEN(fen);
+            setCurrentInitialFEN(normalizedFen);
             invalidate();
+            updateHighlightAnimatorState();
 
-            Log.d(TAG, "setBoardByFEN: " + fen + ", flipped=" + flipped);
+            Log.d(TAG, "setBoardByFEN: " + normalizedFen + ", flipped=" + flipped);
 
         } catch (Exception e) {
             Log.e(TAG, "解析FEN失败: " + e.getMessage());
-            resetBoard();
+            return false;
         }
+        return true;
+    }
+
+    public boolean setBoardByFENPreserveInitialFEN(String fen, boolean flipped) {
+        String oldInitialFen = getCurrentInitialFEN();
+        boolean loaded = setBoardByFEN(fen, flipped);
+        setCurrentInitialFEN(oldInitialFen);
+        return loaded;
     }
 
 
@@ -1546,20 +1797,55 @@ public class ChessView extends View {
     }
 
     /**
+     * 归一化外部传入的FEN/题库行：
+     * 1. 去掉2#前缀；
+     * 2. 只保留标准6段FEN，丢掉后面的标题文本。
+     */
+    private String normalizeFenString(String fen) {
+        if (fen == null) return null;
+
+        String trimmed = stripBom(fen).trim();
+        if (trimmed.isEmpty()) return trimmed;
+
+        String[] tokens = trimmed.split("\\s+");
+        if (tokens.length == 0) return trimmed;
+
+        String first = tokens[0];
+        if (first.startsWith("2#")) {
+            first = first.substring(2);
+        }
+
+        StringBuilder sb = new StringBuilder(first);
+        for (int i = 1; i < tokens.length && i < 6; i++) {
+            sb.append(' ').append(tokens[i]);
+        }
+        return sb.toString();
+    }
+
+    private String stripBom(String value) {
+        if (value != null && !value.isEmpty() && value.charAt(0) == '\uFEFF') {
+            return value.substring(1);
+        }
+        return value;
+    }
+
+    /**
      * 获取当前棋盘视图为Bitmap（直接使用View的绘制）
      */
     public Bitmap captureChessView(int width, int height, String fen, boolean flipped) {
+        int[][] oldBoard = chessBoard;
+        int oldSide = side;
+        boolean oldFlipped = isBoardFlipped;
+        int oldChessWidth = this.chessWidth;
+        int oldOffsetX = this.offsetX;
+        int oldOffsetY = this.offsetY;
         try {
             // 保存当前状态
-            int[][] oldBoard = chessBoard;
-            int oldSide = side;
-            boolean oldFlipped = isBoardFlipped;
-            int oldChessWidth = this.chessWidth;
-            int oldOffsetX = this.offsetX;
-            int oldOffsetY = this.offsetY;
-
             // 设置新棋盘
             int[][] board = parseFENToBoard(fen);
+            if (board == null) {
+                return null;
+            }
             chessBoard = board;
             side = 1;
             isBoardFlipped = flipped;
@@ -1604,18 +1890,18 @@ public class ChessView extends View {
             drawChessPiecesForThumbnail(canvas, board, chessW, offX, offY, flipped);
 
             // 恢复状态
+            return bitmap;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        } finally {
             chessBoard = oldBoard;
             side = oldSide;
             isBoardFlipped = oldFlipped;
             this.chessWidth = oldChessWidth;
             this.offsetX = oldOffsetX;
             this.offsetY = oldOffsetY;
-
-            return bitmap;
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            return null;
         }
     }
 
@@ -1654,29 +1940,41 @@ public class ChessView extends View {
     /**
      * 从FEN解析棋盘
      */
-    private int[][] parseFENToBoard(String fen) {
-        int[][] board = new int[10][9];
+    private int[][] parseStrictFENToBoard(String fen) {
+        if (fen == null || fen.isEmpty()) return null;
         try {
-            String[] parts = fen.split(" ");
-            String boardPart = parts[0];
-            String[] rows = boardPart.split("/");
-            for (int y = 0; y < 10 && y < rows.length; y++) {
-                String row = rows[y];
-                int x = 0;
-                for (int i = 0; i < row.length() && x < 9; i++) {
-                    char c = row.charAt(i);
-                    if (Character.isDigit(c)) {
-                        x += Character.getNumericValue(c);
-                    } else {
-                        board[y][x] = getChessValueFromFENChar(c);
-                        x++;
-                    }
-                }
+            String[] parts = fen.trim().split("\\s+");
+            if (parts.length < 2 || (!"w".equals(parts[1]) && !"b".equals(parts[1]))) {
+                return null;
             }
-        } catch (Exception e) {
-            e.printStackTrace();
+            String[] rows = parts[0].split("/", -1);
+            if (rows.length != 10) return null;
+
+            int[][] board = new int[10][9];
+            for (int y = 0; y < rows.length; y++) {
+                int x = 0;
+                String row = rows[y];
+                for (int i = 0; i < row.length(); i++) {
+                    char c = row.charAt(i);
+                    if (c >= '1' && c <= '9') {
+                        x += c - '0';
+                    } else {
+                        int value = getChessValueFromFENChar(c);
+                        if (value == 0 || x >= 9) return null;
+                        board[y][x++] = value;
+                    }
+                    if (x > 9) return null;
+                }
+                if (x != 9) return null;
+            }
+            return board;
+        } catch (RuntimeException e) {
+            return null;
         }
-        return board;
+    }
+
+    private int[][] parseFENToBoard(String fen) {
+        return parseStrictFENToBoard(normalizeFenString(fen));
     }
 
     // ==================== Pikafish 相关方法 ====================
@@ -1693,136 +1991,6 @@ public class ChessView extends View {
      */
     public boolean isLastMoveCheck() {
         return lastMoveWasCheck;
-    }
-
-    /**
-     * 上一手是否构成"捉"（威胁对方无根子）。
-     * 捉的定义：本步走子后，走棋方对某个对方"无根子"新建立了吃子威胁。
-     *  —— 将帅不算（攻击将帅是将军）；
-     *  —— 未过河的兵卒不算"子"（被威胁也不构成捉，长捉未过河兵卒不违例）；
-     *  —— 必须是本步"新建立"的威胁，移动前就已存在的旧威胁（持续威胁）不算捉；
-     *  —— 等价交换（兑）天然被排除：能被吃回的目标是有根子，本方法只针对无根子，
-     *    无根子被吃后无法吃回，故对无根子的任何新威胁都是真捉。
-     */
-    public boolean isLastMoveChase() {
-        if (moveHistory.isEmpty()) return false;
-        if (lastMoveWasCapture) return false;  // 吃子着法会清空循环历史，不参与捉的判定
-        int[] lastMove = moveHistory.get(moveHistory.size() - 1);
-        int fromY = lastMove[0], fromX = lastMove[1];
-        int toY = lastMove[2], toX = lastMove[3];
-        int movingPiece = chessBoard[toY][toX];
-        if (movingPiece == 0) return false;
-        int movingSide = (movingPiece > 0) ? 1 : -1;
-        int enemySide = -movingSide;
-
-        // 遍历对方所有棋子，检查是否有"无根子"被走棋方新建立威胁
-        for (int y = 0; y < 10; y++) {
-            for (int x = 0; x < 9; x++) {
-                int target = chessBoard[y][x];
-                if (target * enemySide <= 0) continue;  // 不是对方棋子
-                int absTarget = Math.abs(target);
-                if (absTarget == 1) continue;  // 将帅被攻击是将军，不算捉
-                // 未过河的兵卒不算"子"，被威胁也不构成捉
-                if (isPawnNotCrossed(y, target)) continue;
-
-                // 检查该子是否被走棋方攻击
-                if (!isPieceAttackedBy(y, x, movingSide)) continue;
-                // 检查该子是否无根（有根子的威胁属兑/保护，不算捉）
-                if (isPieceRooted(y, x)) continue;
-                // 必须是本步"新建立"的威胁；移动前就存在的旧威胁不算捉
-                if (wasAlreadyThreatenedBefore(y, x, movingSide, fromY, fromX)) continue;
-
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 未过河兵卒判定：未过河的兵/卒本身不算"子"（长捉未过河兵卒不违例）。
-     * 棋盘 y=0 为黑方底线、y=9 为红方底线，河界在第4、5行之间。
-     * 红兵(值7)未过河 = y <= 4（仍在红方半场）；黑卒(值-7)未过河 = y >= 5（仍在黑方半场）。
-     */
-    private boolean isPawnNotCrossed(int pieceY, int piece) {
-        if (Math.abs(piece) != 7) return false;  // 非兵卒
-        if (piece > 0) {  // 红兵
-            return pieceY <= 4;
-        } else {          // 黑卒
-            return pieceY >= 5;
-        }
-    }
-
-    /**
-     * 判断 (targetY, targetX) 上的对方子是否在"本步之前"就已被 attackerSide 威胁
-     * （即该威胁并非本步新建立的，属于持续存在的旧威胁，不算捉）。
-     * 做法：把本步走动的子从落点撤回到起点，还原"本步前"的棋盘，看那时该子是否已被攻击，
-     * 然后恢复棋盘到本步后状态。
-     */
-    private boolean wasAlreadyThreatenedBefore(int targetY, int targetX,
-                                               int attackerSide, int fromY, int fromX) {
-        int movingPiece = chessBoard[targetY][targetX];  // 本步走动的子
-        if (movingPiece == 0) return false;
-        // 还原本步前：走动的子放回起点
-        chessBoard[targetY][targetX] = 0;
-        chessBoard[fromY][fromX] = movingPiece;
-        boolean already = isPieceAttackedBy(targetY, targetX, attackerSide);
-        // 恢复棋盘到本步后状态
-        chessBoard[fromY][fromX] = 0;
-        chessBoard[targetY][targetX] = movingPiece;
-        return already;
-    }
-
-    /**
-     * 检查 (targetY, targetX) 上的棋子是否被 attackerSide 方的任何棋子攻击。
-     * 注意：本方法直接基于当前棋盘读取走法，炮的攻击/吃子路径判断会复用
-     * canMoveDirect（含"恰好隔一子可吃"的炮规），因此炮"隔子打"会被正确识别为攻击。
-     */
-    public boolean isPieceAttackedBy(int targetY, int targetX, int attackerSide) {
-        int target = chessBoard[targetY][targetX];
-        if (target == 0) return false;
-
-        for (int y = 0; y < 10; y++) {
-            for (int x = 0; x < 9; x++) {
-                int piece = chessBoard[y][x];
-                if (piece * attackerSide <= 0) continue;  // 不是攻击方棋子
-                if (canMoveDirect(y, x, targetY, targetX)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /**
-     * 检查 (pieceY, pieceX) 上的棋子是否有根（被己方棋子保护）
-     * 有根 = 如果该子被吃，己方有棋子可以立即吃回
-     */
-    public boolean isPieceRooted(int pieceY, int pieceX) {
-        int piece = chessBoard[pieceY][pieceX];
-        if (piece == 0) return false;
-        int absPiece = Math.abs(piece);
-        if (absPiece == 1) return false;  // 将帅不算有根（将帅不能被保护）
-
-        int ownSide = (piece > 0) ? 1 : -1;
-
-        // 模拟移除该子，检查己方其他棋子是否能攻击到该位置
-        chessBoard[pieceY][pieceX] = 0;
-        boolean rooted = false;
-
-        for (int y = 0; y < 10 && !rooted; y++) {
-            for (int x = 0; x < 9 && !rooted; x++) {
-                int other = chessBoard[y][x];
-                if (other * ownSide <= 0) continue;  // 不是己方棋子
-                if (y == pieceY && x == pieceX) continue;  // 跳过自己（已移除）
-                if (canMoveDirect(y, x, pieceY, pieceX)) {
-                    rooted = true;
-                }
-            }
-        }
-
-        // 恢复棋盘
-        chessBoard[pieceY][pieceX] = piece;
-        return rooted;
     }
 
     /**
@@ -1888,6 +2056,17 @@ public class ChessView extends View {
      * @return 是否成功执行
      */
     public boolean executeUCIMove(String uciMove) {
+        return executeUCIMove(uciMove, 0);
+    }
+
+    /**
+     * 执行引擎走法，并校验引擎只能走指定颜色。
+     *
+     * @param uciMove UCI 格式走法
+     * @param expectedSide 期望的引擎方：1=红方，-1=黑方；0=仅按当前轮次校验
+     * @return 是否成功执行
+     */
+    public boolean executeUCIMove(String uciMove, int expectedSide) {
         if (uciMove == null || uciMove.length() < 4) return false;
 
         try {
@@ -1904,11 +2083,15 @@ public class ChessView extends View {
                 return false;
             }
 
-            // 检查是否有当前走棋方的棋子
-            if (chessBoard[fromY][fromX] * side <= 0) {
+            int movingPiece = chessBoard[fromY][fromX];
+            int movingSide = movingPiece > 0 ? 1 : -1;
+
+            // 引擎走法必须同时满足：轮到该方、起点是该方棋子。
+            if (movingPiece == 0 || movingSide != side ||
+                    (expectedSide != 0 && movingSide != expectedSide)) {
                 Log.e(TAG, "UCI走法错误，无棋子可走: " + uciMove +
-                        ", from=(" + fromY + "," + fromX + ")=" + chessBoard[fromY][fromX] +
-                        ", side=" + side);
+                        ", from=(" + fromY + "," + fromX + ")=" + movingPiece +
+                        ", currentSide=" + side + ", expectedSide=" + expectedSide);
                 return false;
             }
 
@@ -1916,16 +2099,18 @@ public class ChessView extends View {
             int capturedPiece = chessBoard[toY][toX];
             lastMoveWasCapture = (capturedPiece != 0);
 
-            playMoveSound();  // AI走子音效
-
-            chessBoard[toY][toX] = chessBoard[fromY][fromX];
+            chessBoard[toY][toX] = movingPiece;
             chessBoard[fromY][fromX] = 0;
+
+            playMoveSound();  // 只在引擎棋子实际落下后播放音效
 
             // 记录历史
             recordMove(fromY, fromX, toY, toX, capturedPiece);
 
-            // AI选中并落子：设置AI方高亮到落子位置，并清除人类方高亮
-            setHighlight(side, toY, toX);
+            // AI走子同样显示起点和终点光圈
+            lastMoveFrom = new int[]{fromY, fromX};
+            lastMoveTo = new int[]{toY, toX};
+            setHighlight(movingSide, toY, toX);
 
             // 切换走棋方
             side = -side;
@@ -1981,26 +2166,118 @@ public class ChessView extends View {
         }
         return uci;
     }
-    private void playMoveSound() {
+
+    public void setMoveSoundEnabled(boolean enabled) {
+        moveSoundEnabled = enabled;
+        if (enabled) {
+            preloadMoveSound();
+        } else {
+            releaseMoveSound();
+        }
+    }
+
+    private void preloadMoveSound() {
+        if (!moveSoundEnabled || moveSoundLoadStarted || context == null) return;
+        moveSoundLoadStarted = true;
+        moveSoundFallbackStarted = false;
+
         try {
+            AudioAttributes attributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            moveSoundPool = new SoundPool.Builder()
+                    .setMaxStreams(2)
+                    .setAudioAttributes(attributes)
+                    .build();
+            moveSoundPool.setOnLoadCompleteListener((soundPool, sampleId, status) -> {
+                if (sampleId != 0 && status == 0) {
+                    moveSoundLoaded = true;
+                } else {
+                    Log.w(TAG, "move sound load failed, status=" + status);
+                    if (moveSoundUsingExternal && !moveSoundFallbackStarted) {
+                        moveSoundFallbackStarted = true;
+                        reloadBuiltinMoveSound();
+                    }
+                }
+            });
+
             File externalDir = Environment.getExternalStorageDirectory();
             File uiStyleDir = new File(new File(externalDir, "canju12"), "uistyle");
             File externalFile = new File(uiStyleDir, "move.mp3");
-
-            MediaPlayer mp;
-            if (externalFile.exists()) {
-                mp = new MediaPlayer();
-                mp.setDataSource(externalFile.getAbsolutePath());
-                mp.prepare();
+            if (externalFile.isFile()) {
+                moveSoundId = moveSoundPool.load(externalFile.getAbsolutePath(), 1);
+                moveSoundUsingExternal = moveSoundId != 0;
             } else {
-                mp = MediaPlayer.create(context, R.raw.move);
+                moveSoundId = moveSoundPool.load(context, R.raw.move, 1);
+                moveSoundUsingExternal = false;
             }
-            mp.setOnCompletionListener(mp0 -> {
-                mp0.release();
-            });
-            mp.start();
-        } catch (Exception e) {
-            Log.w(TAG, "playMoveSound error: " + e.getMessage());
+
+            if (moveSoundId == 0) {
+                releaseMoveSound();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "preloadMoveSound error: " + t.getMessage());
+            releaseMoveSound();
         }
+    }
+
+    private void playMoveSound() {
+        try {
+            if (!moveSoundEnabled) return;
+            preloadMoveSound();
+            long now = SystemClock.uptimeMillis();
+            if (now - lastMoveSoundPlayMs < 90L) return;
+            if (moveSoundPool != null && moveSoundLoaded && moveSoundId != 0) {
+                moveSoundPool.play(moveSoundId, 1f, 1f, 1, 0, 1f);
+                lastMoveSoundPlayMs = now;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "playMoveSound error: " + t.getMessage());
+        }
+    }
+
+    private void reloadBuiltinMoveSound() {
+        releaseMoveSound();
+        if (!moveSoundEnabled || context == null) return;
+        moveSoundLoadStarted = true;
+        moveSoundUsingExternal = false;
+        try {
+            AudioAttributes attributes = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build();
+            moveSoundPool = new SoundPool.Builder()
+                    .setMaxStreams(1)
+                    .setAudioAttributes(attributes)
+                    .build();
+            moveSoundPool.setOnLoadCompleteListener((soundPool, sampleId, status) -> {
+                moveSoundLoaded = sampleId != 0 && status == 0;
+                if (!moveSoundLoaded) {
+                    Log.w(TAG, "builtin move sound load failed, status=" + status);
+                }
+            });
+            moveSoundId = moveSoundPool.load(context, R.raw.move, 1);
+            if (moveSoundId == 0) releaseMoveSound();
+        } catch (Throwable t) {
+            Log.w(TAG, "reloadBuiltinMoveSound error: " + t.getMessage());
+            releaseMoveSound();
+        }
+    }
+
+    private void releaseMoveSound() {
+        if (moveSoundPool != null) {
+            try {
+                moveSoundPool.release();
+            } catch (Throwable ignored) {
+            }
+        }
+        moveSoundPool = null;
+        moveSoundId = 0;
+        moveSoundLoaded = false;
+        moveSoundLoadStarted = false;
+        moveSoundUsingExternal = false;
+        moveSoundFallbackStarted = false;
+        lastMoveSoundPlayMs = 0L;
     }
 }

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mainLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="@drawable/room"
+    android:paddingStart="20dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="0dp"
+    android:paddingBottom="0dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center_vertical"
+        android:paddingEnd="12dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="错题本"
+            android:textSize="24sp"
+            android:textColor="#000000"
+            android:textStyle="bold"
+            android:layout_gravity="center_horizontal"/>
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="返回"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:maxLines="1"
+            android:singleLine="true"
+            android:ellipsize="none"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="4dp"
+            android:paddingVertical="4dp"
+            android:layout_gravity="center_horizontal"/>
+
+        <Button
+            android:id="@+id/btnPaste"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="粘贴"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:maxLines="1"
+            android:singleLine="true"
+            android:ellipsize="none"
+            android:layout_marginTop="2dp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="4dp"
+            android:paddingVertical="4dp"
+            android:layout_gravity="center_horizontal"/>
+
+        <Button
+            android:id="@+id/btnExport"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="导出"
+            android:textColor="#000000"
+            android:textSize="16sp"
+            android:maxLines="1"
+            android:singleLine="true"
+            android:ellipsize="none"
+            android:layout_marginTop="2dp"
+            android:background="@drawable/button_rounded"
+            android:paddingHorizontal="4dp"
+            android:paddingVertical="4dp"
+            android:layout_gravity="center_horizontal"/>
+    </LinearLayout>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:paddingStart="0dp"
+        android:paddingEnd="0dp"
+        android:paddingTop="0dp"
+        android:paddingBottom="0dp"
+        android:clipToPadding="false"
+        android:background="@android:color/transparent"/>
+
+</LinearLayout>

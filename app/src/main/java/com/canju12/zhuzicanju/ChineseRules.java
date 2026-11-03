@@ -26,14 +26,12 @@ import java.util.List;
  * 2. Only first 8 checks per side count toward valid moves
  * 3. No attacking pieces (R/N/C/P) on both sides = draw
  * 4. Perpetual check (长将): the side that repeatedly checks loses
- * 5. Perpetual chase (长捉): the side that repeatedly chases unrooted pieces loses
- * 6. Non-violating repetition (一将一闲/长兑/长献 etc.): draw
+ * 5. Non-violating repetition (一将一闲/长兑/长献 etc.): draw
  *
  * Repetition detection:
  * - Same position (board + side-to-move) appearing 3 times → warning
  * - 4th occurrence → classify the cycle and decide:
  *   - 长将 → that side loses
- *   - 长捉 → that side loses
  *   - Otherwise → draw
  */
 public class ChineseRules {
@@ -63,9 +61,6 @@ public class ChineseRules {
     // Check history: parallel to positionHistory, records whether the move that LED to this position was a check
     // checkHistory[i] = true means the move that produced positionHistory[i] was a check (将军)
     private List<Boolean> checkHistory;
-    // Chase history: parallel to positionHistory, records whether the move was a chase (捉无根子)
-    // chaseHistory[i] = true means the move that produced positionHistory[i] was a chase
-    private List<Boolean> chaseHistory;
     // Side history: which side made the move that produced this position
     // sideHistory[i] = 1 (red) or -1 (black)
     private List<Integer> sideHistory;
@@ -87,14 +82,13 @@ public class ChineseRules {
         }
     }
 
-    // Violation result: long check → loser side; long chase → loser side; or draw by repetition
+    // Violation result: long check -> loser side, or draw by repetition
     public static class ViolationResult {
         public static final int TYPE_LONG_CHECK_LOSS  = 1;  // 长将判负
         public static final int TYPE_REPETITION_DRAW   = 2;  // 重复局面判和
-        public static final int TYPE_LONG_CHASE_LOSS   = 3;  // 长捉判负
 
         public final int type;
-        public final int loserSide;  // meaningful for TYPE_LONG_CHECK_LOSS and TYPE_LONG_CHASE_LOSS
+        public final int loserSide;  // meaningful for TYPE_LONG_CHECK_LOSS
         public final String description;
 
         private ViolationResult(int type, int loserSide, String description) {
@@ -106,11 +100,6 @@ public class ChineseRules {
         public static ViolationResult longCheckLoss(int loserSide) {
             return new ViolationResult(TYPE_LONG_CHECK_LOSS, loserSide,
                     loserSide == 1 ? "红方长将判负" : "黑方长将判负");
-        }
-
-        public static ViolationResult longChaseLoss(int loserSide) {
-            return new ViolationResult(TYPE_LONG_CHASE_LOSS, loserSide,
-                    loserSide == 1 ? "红方长捉判负" : "黑方长捉判负");
         }
 
         public static ViolationResult repetitionDraw() {
@@ -125,7 +114,6 @@ public class ChineseRules {
     public ChineseRules() {
         positionHistory = new ArrayList<>();
         checkHistory = new ArrayList<>();
-        chaseHistory = new ArrayList<>();
         sideHistory = new ArrayList<>();
         reset();
     }
@@ -136,7 +124,6 @@ public class ChineseRules {
         blackCheckCount = 0;
         positionHistory.clear();
         checkHistory.clear();
-        chaseHistory.clear();
         sideHistory.clear();
         repetitionWarningShown = false;
         repetitionToastShown = false;
@@ -149,12 +136,11 @@ public class ChineseRules {
      *
      * @param wasCapture  whether this move captured a piece
      * @param wasCheck    whether this move was a check (将军)
-     * @param wasChase    whether this move was a chase (捉无根子)
      * @param movingSide  which side made this move (1=red, -1=black)
      * @param chessBoard  current board state after the move
      * @param sideToMove  which side is to move next (1=red, -1=black)
      */
-    public void recordMove(boolean wasCapture, boolean wasCheck, boolean wasChase,
+    public void recordMove(boolean wasCapture, boolean wasCheck,
                            int movingSide, int[][] chessBoard, int sideToMove) {
         // Update valid move counter
         updateValidMoves(wasCapture, wasCheck, movingSide);
@@ -163,7 +149,6 @@ public class ChineseRules {
         if (wasCapture) {
             positionHistory.clear();
             checkHistory.clear();
-            chaseHistory.clear();
             sideHistory.clear();
             repetitionWarningShown = false;
             repetitionToastShown = false;
@@ -174,7 +159,6 @@ public class ChineseRules {
         String posKey = getPositionKey(chessBoard, sideToMove);
         positionHistory.add(posKey);
         checkHistory.add(wasCheck);
-        chaseHistory.add(wasChase);
         sideHistory.add(movingSide);
 
         // Check for repetition cycles
@@ -182,18 +166,10 @@ public class ChineseRules {
     }
 
     /**
-     * Legacy overload without wasChase — treats all non-check moves as non-chase.
-     */
-    public void recordMove(boolean wasCapture, boolean wasCheck, int movingSide,
-                           int[][] chessBoard, int sideToMove) {
-        recordMove(wasCapture, wasCheck, false, movingSide, chessBoard, sideToMove);
-    }
-
-    /**
      * Legacy overload — derives sideToMove from movingSide.
      */
     public void recordMove(boolean wasCapture, boolean wasCheck, int movingSide, int[][] chessBoard) {
-        recordMove(wasCapture, wasCheck, false, movingSide, chessBoard, -movingSide);
+        recordMove(wasCapture, wasCheck, movingSide, chessBoard, -movingSide);
     }
 
     private void updateValidMoves(boolean wasCapture, boolean wasCheck, int movingSide) {
@@ -238,7 +214,6 @@ public class ChineseRules {
      *
      * When detected, we classify the cycle:
      * - 长将 → that side loses
-     * - 长捉 → that side loses
      * - Otherwise → draw by repetition
      */
     private void checkRepetitionCycle() {
@@ -291,8 +266,7 @@ public class ChineseRules {
      * Examine the moves in one full cycle (the most recent k moves).
      * For each side, check:
      * 1. Do they check on every move? → 长将 → that side loses
-     * 2. Do they chase (捉无根子) on every move (and not all checks)? → 长捉 → that side loses
-     * 3. Otherwise → draw (一将一闲/长兑/长献 etc.)
+     * 2. Otherwise -> draw (一将一闲/长兑/长献 etc.)
      *
      * @param k cycle length in half-moves
      * @return ViolationResult indicating the outcome
@@ -303,8 +277,6 @@ public class ChineseRules {
         // Examine the most recent cycle: moves from (size - k) to (size - 1)
         boolean redAlwaysChecks = true;
         boolean blackAlwaysChecks = true;
-        boolean redAlwaysChases = true;
-        boolean blackAlwaysChases = true;
         boolean redHasMove = false;
         boolean blackHasMove = false;
 
@@ -312,21 +284,17 @@ public class ChineseRules {
             if (i < 0) continue;
             int side = sideHistory.get(i);
             boolean wasCheck = checkHistory.get(i);
-            boolean wasChase = chaseHistory.get(i);
 
             if (side == 1) {
                 redHasMove = true;
                 if (!wasCheck) redAlwaysChecks = false;
-                // 走棋方的某步既不将军也不捉 → 该方不是长捉
-                if (!wasCheck && !wasChase) redAlwaysChases = false;
             } else {
                 blackHasMove = true;
                 if (!wasCheck) blackAlwaysChecks = false;
-                if (!wasCheck && !wasChase) blackAlwaysChases = false;
             }
         }
 
-        // 先判长将（长将比长捉更严重）。但若双方都长将，按规则判和而非任判一方。
+        // If both sides give perpetual check, the repetition is a draw.
         boolean redLongCheck = redHasMove && redAlwaysChecks;
         boolean blackLongCheck = blackHasMove && blackAlwaysChecks;
         if (redLongCheck && blackLongCheck) {
@@ -339,20 +307,6 @@ public class ChineseRules {
             return ViolationResult.longCheckLoss(-1);
         }
 
-        // 长捉判定：走棋方在循环中每步要么将军要么捉无根子，且不全是将军
-        // （到这里双方都非纯长将，说明各自至少有一步是非将步）
-        boolean redLongChase = redHasMove && redAlwaysChases && !redLongCheck;
-        boolean blackLongChase = blackHasMove && blackAlwaysChases && !blackLongCheck;
-        if (redLongChase && blackLongChase) {
-            return ViolationResult.repetitionDraw("双方长捉判和");
-        }
-        if (redLongChase) {
-            return ViolationResult.longChaseLoss(1);
-        }
-        if (blackLongChase) {
-            return ViolationResult.longChaseLoss(-1);
-        }
-
         // 其他情况：一将一闲、长兑、长献等 → 判和
         return ViolationResult.repetitionDraw();
     }
@@ -363,7 +317,6 @@ public class ChineseRules {
      * Callers should check:
      * - result.isDraw → game is a draw
      * - isLongCheckViolation() → long check loss
-     * - isLongChaseViolation() → long chase loss
      */
     public DrawResult checkDraw(int[][] chessBoard) {
         // 60-round rule
@@ -392,21 +345,14 @@ public class ChineseRules {
     }
 
     /**
-     * Whether a long-chase (perpetual chase) violation has been detected.
-     */
-    public boolean isLongChaseViolation() {
-        return violationResult != null && violationResult.type == ViolationResult.TYPE_LONG_CHASE_LOSS;
-    }
-
-    /**
-     * Whether any violation (long check or long chase) has been detected.
+     * Whether a long-check violation has been detected.
      */
     public boolean isViolation() {
         return violationResult != null && violationResult.type != ViolationResult.TYPE_REPETITION_DRAW;
     }
 
     /**
-     * Get which side loses due to violation (long check or long chase).
+     * Get which side loses due to a long-check violation.
      * @return 1 = red loses, -1 = black loses, 0 = no violation
      */
     public int getViolationSide() {

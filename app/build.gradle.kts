@@ -19,8 +19,8 @@ android {
         applicationId = "com.canju12.zhuzicanju"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.1.12"
+        versionCode = 2
+        versionName = "1.1.26"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -83,7 +83,6 @@ dependencies {
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(libs.ext.junit)
 }
-
 
 
 

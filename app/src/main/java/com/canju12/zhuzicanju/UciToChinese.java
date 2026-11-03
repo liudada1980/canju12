@@ -58,6 +58,7 @@ public class UciToChinese {
      */
     public static String convert(String uciMove, int pieceValue, int[][] board, int side) {
         if (uciMove == null || uciMove.length() < 4) return uciMove;
+        if (!isValidBoard(board) || (side != 1 && side != -1)) return uciMove;
         int fromX = uciMove.charAt(0) - 'a';
         int fromY = 9 - (uciMove.charAt(1) - '0');
         int toX = uciMove.charAt(2) - 'a';
@@ -73,6 +74,7 @@ public class UciToChinese {
      */
     public static String convert(String uciMove, int[][] board, int side) {
         if (uciMove == null || uciMove.length() < 4) return uciMove;
+        if (!isValidBoard(board) || (side != 1 && side != -1)) return uciMove;
 
         int fromX = uciMove.charAt(0) - 'a';
         int fromY = 9 - (uciMove.charAt(1) - '0');
@@ -88,6 +90,14 @@ public class UciToChinese {
         if (piece == 0) return uciMove;
 
         return convertWithPiece(uciMove, piece, board, fromX, fromY, toX, toY, side);
+    }
+
+    private static boolean isValidBoard(int[][] board) {
+        if (board == null || board.length != 10) return false;
+        for (int[] row : board) {
+            if (row == null || row.length != 9) return false;
+        }
+        return true;
     }
 
     private static String convertWithPiece(String uciMove, int piece, int[][] board,

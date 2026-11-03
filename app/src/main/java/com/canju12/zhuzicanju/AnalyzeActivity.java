@@ -14,9 +14,12 @@
 package com.canju12.zhuzicanju;
 
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.drawable.BitmapDrawable;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Handler;
+import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.View;
 import android.view.animation.AlphaAnimation;
@@ -44,11 +47,13 @@ public class AnalyzeActivity extends AppCompatActivity {
     private static final String CLOUD_DB_URL = "https://www.chessdb.cn/chessdb.php";
 
     private ChessView chessView;
+    private final PositionValidator positionValidator = new PositionValidator();
     private TextView tvAnalyzeResult;
     private TextView tvCloudDb;
     private LinearLayout llMoveList;
     private ScrollView svMoveList;
-    private Button btnBack, btnUndo, btnReset, btnAnalyze;
+    private LinearLayout analysisArea;
+    private Button btnBack, btnUndo, btnNext, btnReset, btnAnalyze;
     private ImageView ivBoard, ivTurnIndicator;
     private androidx.constraintlayout.widget.ConstraintLayout mainLayout;
 
@@ -57,11 +62,16 @@ public class AnalyzeActivity extends AppCompatActivity {
 
     private Handler handler = new Handler();
     private Handler poetryHandler = new Handler();
+    private volatile int cloudRequestId = 0;
+    private int analysisPrimaryTextColor = Color.BLACK;
+    private int analysisSecondaryTextColor = 0xFF333333;
+    private int analysisPanelColor = 0xFFE8E8E8;
 
     // ===== Pikafish 引擎相关 =====
     private PikafishEngine pikafishEngine;
     private boolean isAnalyzing = false;       // 当前是否正在分析（用户点击了"分析"且未点"停止"）
     private boolean isEngineReady = false;     // 引擎是否已启动就绪
+    private boolean isEngineStarting = false;  // 防止快速点击重复启动引擎
     private volatile int searchId = 0;         // 搜索ID，每次发新局面递增，用于区分过期结果
     private Thread readerThread = null;        // 持久读取线程（只创建一次）
     private final Object engineLock = new Object();  // 引擎发送命令的锁
@@ -72,7 +82,12 @@ public class AnalyzeActivity extends AppCompatActivity {
     private TextView tvShiju;
     private List<String> poetryList;
     private int minuteCounter = 0;
+    private volatile boolean activityDestroyed = false;
     private final long MINUTE_DELAY = 60000;
+
+    private boolean isActivityAlive() {
+        return !activityDestroyed && !isFinishing();
+    }
 
     // 招法历史
     private List<MoveRecord> moveHistory = new ArrayList<>();
@@ -136,46 +151,74 @@ public class AnalyzeActivity extends AppCompatActivity {
         showRandomPoetry();
 
         if (initialFEN != null && !initialFEN.isEmpty()) {
-            chessView.setBoardByFEN(initialFEN, isBoardFlipped);
+            PositionValidator.Result formatResult =
+                    positionValidator.validateFenFormat(initialFEN);
+            if (!formatResult.valid || !chessView.setBoardByFEN(initialFEN, isBoardFlipped)) {
+                ToastUtil.makeText(this, "FEN格式错误，无法加载局面",
+                        Toast.LENGTH_LONG).show();
+                finish();
+                return;
+            }
+            PositionValidator.Result positionResult =
+                    positionValidator.validate(chessView.chessBoard);
+            if (!positionResult.valid) {
+                ToastUtil.makeText(this, "局面不合法：" + positionResult.reason,
+                        Toast.LENGTH_LONG).show();
+                finish();
+                return;
+            }
             chessView.setCurrentInitialFEN(initialFEN);
         }
         if (currentMoveIndex >= 0 && currentMoveIndex < moveHistory.size()) {
-            chessView.setBoardByFEN(moveHistory.get(currentMoveIndex).fen);
+            restoreHistoryPosition(currentMoveIndex);
         }
         updateTurnIndicator(chessView.getCurrentSide());
+
+        // 横屏启动时程序化调整棋盘尺寸
+        if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            chessView.post(new Runnable() {
+                @Override
+                public void run() {
+                    adjustAnalyzeBoardForLandscape();
+                }
+            });
+        }
 
         queryCloudDb(chessView.getFEN());
         updateMoveList();
     }
 
-        private void initViews() {
+    private void initViews() {
         chessView = findViewById(R.id.chessView);
         tvAnalyzeResult = findViewById(R.id.tvAnalyzeResult);
-        // 统一用 setTypeface 保证平板也加粗（sans-serif 有粗体变体）
-        tvAnalyzeResult.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD));
-        tvAnalyzeResult.setText(toBoldCenterTitle(
-                "<font color='#000000'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font><br/>" +
-                "<br/>" +
-                "🐟 🐠 🐡 皮卡鱼为您加油！🦈 🎏 🐬 🐳 🐋", tvAnalyzeResult));
+        // 结果区域使用普通字重，标题的粗细由 HTML 标记单独控制
+        tvAnalyzeResult.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL));
         tvCloudDb = findViewById(R.id.tvCloudDb);
-        // 云库标题也统一用 sans-serif BOLD
-        tvCloudDb.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD));
+        // 云库招法和评分使用普通字重
+        tvCloudDb.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL));
         llMoveList = findViewById(R.id.moveListContent);
         svMoveList = findViewById(R.id.svMoveList);
+        analysisArea = findViewById(R.id.analysisArea);
         btnBack = findViewById(R.id.btnBack);
         btnUndo = findViewById(R.id.btnUndo);
+        btnNext = findViewById(R.id.btnNext);
         btnReset = findViewById(R.id.btnReset);
         btnAnalyze = findViewById(R.id.btnAnalyze);
         ivBoard = findViewById(R.id.ivBoard);
         ivTurnIndicator = findViewById(R.id.ivTurnIndicator);
         tvShiju = findViewById(R.id.shiju);
         mainLayout = findViewById(R.id.mainLayout);
+
+        refreshAnalyzeTheme(chessView != null ? chessView.getRoomBitmap() : null);
+        tvAnalyzeResult.setText(toBoldCenterTitle(
+                "<font color='" + colorToHex(analysisPrimaryTextColor) + "'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font><br/>" +
+                "<br/>" +
+                "🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋", tvAnalyzeResult));
+        setCloudDbText("云库分析");
     }
 
     private void updateTurnIndicator(int side) {
-        if (ivTurnIndicator != null) {
-            ivTurnIndicator.setImageResource(side == 1 ? R.drawable.rk : R.drawable.bk);
-        }
+        UiThemeHelper.applyTurnIndicatorImage(this, ivTurnIndicator, side);
     }
 
     private void setupBackground() {
@@ -192,6 +235,9 @@ public class AnalyzeActivity extends AppCompatActivity {
             } else {
                 ivBoard.setImageResource(R.drawable.board);
             }
+
+            applyRoomButtonTheme(roomBitmap);
+            refreshAnalyzeTheme(roomBitmap);
         } catch (Throwable e) {
             // 用 Throwable 兜底：内置 PNG 在某些硬件上解码/设置可能抛 OOM 等 Error
             e.printStackTrace();
@@ -199,6 +245,59 @@ public class AnalyzeActivity extends AppCompatActivity {
                 mainLayout.setBackgroundColor(android.graphics.Color.parseColor("#E8D5A2"));
             } catch (Throwable ignored) { }
         }
+    }
+
+    private void applyRoomButtonTheme(Bitmap roomBitmap) {
+        try {
+            View content = findViewById(android.R.id.content);
+            UiThemeHelper.applyRoomButtonTheme(this, content, roomBitmap);
+        } catch (Throwable t) {
+            Log.w(TAG, "????????: " + t.getMessage());
+        }
+    }
+
+    private void refreshAnalyzeTheme(Bitmap roomBitmap) {
+        UiThemeHelper.ThemePalette palette = UiThemeHelper.resolvePalette(this, roomBitmap);
+        if (palette != null) {
+            analysisPanelColor = palette.normalFillColor;
+            analysisPrimaryTextColor = palette.textColor;
+            analysisSecondaryTextColor = palette.textColor == Color.WHITE ? Color.WHITE : 0xFF333333;
+        } else {
+            analysisPanelColor = 0xFFE8E8E8;
+            analysisPrimaryTextColor = Color.BLACK;
+            analysisSecondaryTextColor = 0xFF333333;
+        }
+        applyAnalyzeAreaThemeColors();
+    }
+
+    private void applyAnalyzeAreaThemeColors() {
+        if (analysisArea != null) {
+            analysisArea.setBackgroundColor(analysisPanelColor);
+        }
+        if (tvCloudDb != null) {
+            View parent = (View) tvCloudDb.getParent();
+            if (parent != null) {
+                parent.setBackgroundColor(analysisPanelColor);
+            }
+            tvCloudDb.setTextColor(analysisSecondaryTextColor);
+        }
+        if (tvAnalyzeResult != null) {
+            View parent = (View) tvAnalyzeResult.getParent();
+            if (parent != null) {
+                parent.setBackgroundColor(analysisPanelColor);
+            }
+            tvAnalyzeResult.setTextColor(analysisSecondaryTextColor);
+        }
+        if (svMoveList != null) {
+            svMoveList.setBackgroundColor(analysisPanelColor);
+        }
+        if (llMoveList != null) {
+            llMoveList.setBackgroundColor(Color.TRANSPARENT);
+        }
+    }
+
+    private String colorToHex(int color) {
+        return String.format(java.util.Locale.US, "%06X", (0xFFFFFF & color));
     }
 
     private void setupListeners() {
@@ -211,40 +310,51 @@ public class AnalyzeActivity extends AppCompatActivity {
                 // 悔棋：回到上一步
                 navigatingHistory = true;
                 currentMoveIndex--;
-                if (currentMoveIndex >= 0) {
-                    chessView.setBoardByFEN(moveHistory.get(currentMoveIndex).fen, isBoardFlipped);
-                } else {
-                    chessView.setBoardByFEN(initialFEN, isBoardFlipped);
-                }
+                restoreHistoryPosition(currentMoveIndex);
                 navigatingHistory = false;
                 updateTurnIndicator(chessView.getCurrentSide());
-                Toast.makeText(this, "悔棋成功", Toast.LENGTH_SHORT).show();
                 queryCloudDb(chessView.getFEN());
                 updateMoveList();
                 // 悔棋后重新分析当前局面
                 restartAnalysisIfNeeded();
             } else {
-                Toast.makeText(this, "已回到最初局面", Toast.LENGTH_SHORT).show();
+                ToastUtil.makeText(this, "已回到最初局面", Toast.LENGTH_SHORT).show();
+            }
+        });
+
+        btnNext.setOnClickListener(v -> {
+            if (currentMoveIndex + 1 < moveHistory.size()) {
+                navigatingHistory = true;
+                currentMoveIndex++;
+                restoreHistoryPosition(currentMoveIndex);
+                navigatingHistory = false;
+                updateTurnIndicator(chessView.getCurrentSide());
+                queryCloudDb(chessView.getFEN());
+                updateMoveList();
+                restartAnalysisWithFen(chessView.getFEN());
+            } else {
+                ToastUtil.makeText(this, "已经是最后一步", Toast.LENGTH_SHORT).show();
             }
         });
 
         btnReset.setOnClickListener(v -> {
             navigatingHistory = true;
             moveHistory.clear();
-            currentMoveIndex = -1;
-            if (initialFEN != null && !initialFEN.isEmpty()) {
-                chessView.setBoardByFEN(initialFEN, isBoardFlipped);
-                chessView.setCurrentInitialFEN(initialFEN);
-            } else {
-                chessView.resetToInitial();
-            }
+                currentMoveIndex = -1;
+                if (initialFEN != null && !initialFEN.isEmpty()) {
+                    chessView.setBoardByFEN(initialFEN, isBoardFlipped);
+                    chessView.setCurrentInitialFEN(initialFEN);
+                } else {
+                    chessView.resetToInitial();
+                }
+                chessView.clearSelection();
             navigatingHistory = false;
             updateTurnIndicator(1);
             updateMoveList();
             tvAnalyzeResult.setText(toBoldCenterTitle(
-                "<font color='#1F6128'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font><br/><br/>🐟 🐠 🐡 皮卡鱼为您加油！🦈 🎏 🐬 🐳 🐋", tvAnalyzeResult));
+                "<font color='" + colorToHex(analysisPrimaryTextColor) + "'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font><br/><br/>🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋", tvAnalyzeResult));
             queryCloudDb(chessView.getFEN());
-            Toast.makeText(this, "已重置局面", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "已重置局面", Toast.LENGTH_SHORT).show();
             // 重来后重新分析当前局面
             restartAnalysisIfNeeded();
         });
@@ -264,6 +374,7 @@ public class AnalyzeActivity extends AppCompatActivity {
 
     private void setupChessView() {
         chessView.setOnTurnChangeListener(side -> updateTurnIndicator(side));
+        chessView.setMoveSoundEnabled(true);
 
         chessView.setOnGameListener(new ChessView.OnGameListener() {
             @Override
@@ -297,7 +408,7 @@ public class AnalyzeActivity extends AppCompatActivity {
 
             @Override
             public void onGameOver(int winner) {
-                Toast.makeText(AnalyzeActivity.this,
+                ToastUtil.makeText(AnalyzeActivity.this,
                         winner == 1 ? "红方胜利！" : "黑方胜利！", Toast.LENGTH_SHORT).show();
             }
         });
@@ -312,7 +423,7 @@ public class AnalyzeActivity extends AppCompatActivity {
         TextView header = new TextView(this);
         header.setText("初始局面");
         header.setTextSize(12);
-        header.setTextColor(0xFF000000);
+        header.setTextColor(analysisPrimaryTextColor);
         header.setTypeface(Typeface.DEFAULT_BOLD); // 加粗
 
         header.setGravity(android.view.Gravity.CENTER);
@@ -325,6 +436,7 @@ public class AnalyzeActivity extends AppCompatActivity {
             } else {
                 chessView.resetToInitial();
             }
+            chessView.clearSelection();
             navigatingHistory = false;
             updateTurnIndicator(chessView.getCurrentSide());
             updateMoveList();
@@ -345,19 +457,19 @@ public class AnalyzeActivity extends AppCompatActivity {
             // 步号用普通字体，招法用等宽字体（数字对齐）
             android.text.SpannableString ss = new android.text.SpannableString(displayText);
             ss.setSpan(new android.text.style.TypefaceSpan(
-                    android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)),
+                    "sans-serif"),
                     0, numStr.length(), 0);
             ss.setSpan(new android.text.style.TypefaceSpan(
-                    android.graphics.Typeface.create("monospace", android.graphics.Typeface.NORMAL)),
+                    "monospace"),
                     numStr.length(), displayText.length(), 0);
             tv.setText(ss);
-            tv.setTextColor(0xFF000000);
+            tv.setTextColor(analysisPrimaryTextColor);
             tv.setTextSize(12);
             tv.setBackgroundColor(index == currentMoveIndex ? 0xFFCCE5FF : 0x00000000);
             tv.setOnClickListener(v -> {
                 navigatingHistory = true;
                 currentMoveIndex = index;
-                chessView.setBoardByFEN(r.fen, isBoardFlipped);
+                restoreHistoryPosition(index);
                 navigatingHistory = false;
                 updateTurnIndicator(chessView.getCurrentSide());
                 updateMoveList();
@@ -366,8 +478,25 @@ public class AnalyzeActivity extends AppCompatActivity {
                 // 点击棋谱列表后重新分析（直接用该步走完后的FEN，不带moves）
                 restartAnalysisWithFen(r.fen);
             });
-            llMoveList.addView(tv);
+        llMoveList.addView(tv);
         }
+    }
+
+    /** Restore both the board position and the move highlight for a history entry. */
+    private boolean restoreHistoryPosition(int index) {
+        if (index < 0 || index >= moveHistory.size()) {
+            boolean loaded = initialFEN != null && !initialFEN.isEmpty()
+                    && chessView.setBoardByFEN(initialFEN, isBoardFlipped);
+            chessView.clearSelection();
+            return loaded;
+        }
+        MoveRecord record = moveHistory.get(index);
+        boolean loaded = chessView.setBoardByFENPreserveInitialFEN(
+                record.fen, isBoardFlipped);
+        if (loaded) {
+            chessView.restoreMoveHighlightFromUci(record.uci);
+        }
+        return loaded;
     }
 
     private void scrollToLastMove() {
@@ -389,13 +518,14 @@ public class AnalyzeActivity extends AppCompatActivity {
 
     private void queryCloudDb(final String fen) {
         // 捕获当前棋盘快照和行棋方，避免子线程读取时棋盘已被用户导航改变
+        final int requestId = ++cloudRequestId;
         final int[][] boardSnapshot = copyBoard(chessView.chessBoard);
         final int sideSnapshot = chessView.getCurrentSide();
         new Thread(() -> {
             try {
                 String encodedFen = java.net.URLEncoder.encode(fen, "UTF-8");
                 StringBuilder display = new StringBuilder();
-                display.append("云库\n");
+                display.append("云库分析\n");
 
                 // 查所有着法 queryall
                 String allUrl = CLOUD_DB_URL + "?action=queryall&board=" + encodedFen + "&egtbmetric=dtm&showall=1";
@@ -431,25 +561,54 @@ public class AnalyzeActivity extends AppCompatActivity {
                 // 去掉多余的深度查询段，深度已在上面每行显示
                 final String text = display.toString().trim();
                 runOnUiThread(() -> {
-                    // 用 SpannableString 让标题绿色居中（字体已在initViews中设为sans-serif BOLD）
-                    android.text.SpannableString ss = new android.text.SpannableString(text);
-                    int titleEnd = text.indexOf('\n');
-                    if (titleEnd > 0) {
-                        ss.setSpan(new android.text.style.ForegroundColorSpan(0xFF000000), 0, titleEnd, 0);
-                        ss.setSpan(new android.text.style.AlignmentSpan.Standard(
-                                android.text.Layout.Alignment.ALIGN_CENTER), 0, titleEnd, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    if (requestId != cloudRequestId
+                            || chessView == null
+                            || isFinishing()
+                            || isDestroyed()
+                            || !fen.equals(chessView.getFEN())) {
+                        return;
                     }
-                    tvCloudDb.setText(ss);
+                    // 用 SpannableString 让标题居中，招法和评分保持普通字重
+                    setCloudDbText(text);
                 });
 
             } catch (Exception e) {
                 Log.w(TAG, "云库查询失败", e);
-                runOnUiThread(() -> tvCloudDb.setText("云库：查询失败"));
+                runOnUiThread(() -> {
+                    if (requestId != cloudRequestId
+                            || chessView == null
+                            || isFinishing()
+                            || isDestroyed()
+                            || !fen.equals(chessView.getFEN())) {
+                        return;
+                    }
+                    setCloudDbText("云库分析\n查询失败");
+                });
             }
         }).start();
     }
 
-    /** 按视觉宽度右补空格（中文=2，英文=1） */
+    private void setCloudDbText(String text) {
+        if (tvCloudDb == null) return;
+
+        android.text.SpannableString ss = new android.text.SpannableString(
+                text == null ? "" : text);
+        int titleEnd = ss.toString().indexOf('\n');
+        if (titleEnd < 0) titleEnd = ss.length();
+        if (titleEnd > 0) {
+            ss.setSpan(new android.text.style.ForegroundColorSpan(analysisPrimaryTextColor),
+                    0, titleEnd, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            ss.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                    0, titleEnd, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+            ss.setSpan(new android.text.style.AlignmentSpan.Standard(
+                    android.text.Layout.Alignment.ALIGN_CENTER), 0, titleEnd,
+                    android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        tvCloudDb.setTextColor(analysisSecondaryTextColor);
+        tvCloudDb.setText(ss);
+    }
+
+    /** ??????????????????=2?????1??*/
     private String padVisual(String s, int target) {
         int w = 0;
         for (char c : s.toCharArray()) { w += (c > 127) ? 2 : 1; }
@@ -479,9 +638,9 @@ public class AnalyzeActivity extends AppCompatActivity {
         }
     }
 
-    
 
-    
+
+
     private int[][] copyBoard(int[][] src) {
         int[][] dst = new int[10][9];
         for (int y = 0; y < 10; y++) System.arraycopy(src[y], 0, dst[y], 0, 9);
@@ -522,7 +681,7 @@ private void initPoetryLibrary() {
             normalList.remove("🔥🔥刘霸天为您加油🔥🔥🔥");
         }
         if (normalList.isEmpty()) {
-            tvShiju.setText("暂无可用诗句");
+            setShijuText("暂无可用诗句");
             return;
         }
         Random random = new Random();
@@ -532,8 +691,26 @@ private void initPoetryLibrary() {
     }
 
     private void displaySpecialMessage() {
-        String text = "🔥🔥刘霸天为您加油！🔥🔥🔥";
+        String text = "🔥🔥一二残局🔥🔥🔥";
         animateText(tvShiju, text);
+    }
+
+    /** 设置shiju文字，横屏时自动转为竖排（每字换行），正确处理emoji等unicode补充字符 */
+    private void setShijuText(String text) {
+        if (tvShiju == null) return;
+        if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            while (i < text.length()) {
+                int cp = text.codePointAt(i);
+                if (sb.length() > 0) sb.append("\n");
+                sb.appendCodePoint(cp);
+                i += Character.charCount(cp);
+            }
+            tvShiju.setText(sb.toString());
+        } else {
+            tvShiju.setText(text);
+        }
     }
 
     private void animateText(TextView textView, String newText) {
@@ -548,7 +725,12 @@ private void initPoetryLibrary() {
 
             @Override
             public void onAnimationEnd(android.view.animation.Animation animation) {
-                textView.setText(newText);
+                // 横屏时shiju需要竖排显示
+                if (textView == tvShiju) {
+                    setShijuText(newText);
+                } else {
+                    textView.setText(newText);
+                }
                 AlphaAnimation fadeIn = new AlphaAnimation(0.0f, 1.0f);
                 fadeIn.setDuration(500);
                 fadeIn.setFillAfter(true);
@@ -591,6 +773,7 @@ private void initPoetryLibrary() {
     @Override
     protected void onPause() {
         super.onPause();
+        if (activityDestroyed) return;
         // 暂停时停止引擎搜索，避免后台全速运行消耗电量和CPU
         if (isAnalyzing && pikafishEngine != null && isEngineReady) {
             synchronized (engineLock) {
@@ -599,7 +782,7 @@ private void initPoetryLibrary() {
                 } catch (Exception ignored) {}
             }
             isAnalyzing = false;
-            btnAnalyze.setText("分析");
+            if (btnAnalyze != null) btnAnalyze.setText("分析");
         }
     }
 
@@ -607,12 +790,15 @@ private void initPoetryLibrary() {
 
     @Override
     protected void onDestroy() {
+        activityDestroyed = true;
         super.onDestroy();
         handler.removeCallbacksAndMessages(null);
         poetryHandler.removeCallbacksAndMessages(null);
         // ===== 关闭 Pikafish 引擎 =====
         isAnalyzing = false;
         isEngineReady = false;
+        isEngineStarting = false;
+        cloudRequestId++;
         searchId = 0;
         if (pikafishEngine != null) {
             pikafishEngine.quit();
@@ -681,7 +867,12 @@ private void initPoetryLibrary() {
             pikafishEngine = new PikafishEngine();
         }
 
+        if (isEngineStarting) {
+            return;
+        }
+
         if (!isEngineReady) {
+            isEngineStarting = true;
             btnAnalyze.setText("启动中...");
             Log.d(TAG, "引擎未就绪，首次启动...");
 
@@ -690,15 +881,22 @@ private void initPoetryLibrary() {
                     pikafishEngine.start(AnalyzeActivity.this);
                     Log.d(TAG, "★★★ Pikafish 引擎启动完成 ★★★");
                     isEngineReady = true;
-                    runOnUiThread(() -> doPikafishAnalysis());
+                    runOnUiThread(() -> {
+                        isEngineStarting = false;
+                        if (isActivityAlive()) {
+                            doPikafishAnalysis();
+                        }
+                    });
                 } catch (Exception e) {
                     Log.e(TAG, "Pikafish 引擎启动失败", e);
                     runOnUiThread(() -> {
+                        isEngineStarting = false;
                         isEngineReady = false;
+                        if (!isActivityAlive()) return;
                         btnAnalyze.setText("分析");
                         String msg = e.getMessage();
                         String displayMsg = msg != null && msg.length() > 300 ? msg.substring(0, 300) : msg;
-                        Toast.makeText(AnalyzeActivity.this,
+                        ToastUtil.makeText(AnalyzeActivity.this,
                                 "AI启动失败:\n" + displayMsg,
                                 Toast.LENGTH_LONG).show();
                     });
@@ -715,7 +913,8 @@ private void initPoetryLibrary() {
      * 执行皮卡鱼分析（引擎已就绪）
      */
     private void doPikafishAnalysis() {
-        if (pikafishEngine == null || !isEngineReady) return;
+        if (!isActivityAlive() || pikafishEngine == null || !isEngineReady
+                || chessView == null || tvAnalyzeResult == null || btnAnalyze == null) return;
 
         isAnalyzing = true;
         btnAnalyze.setText("停止");
@@ -775,6 +974,7 @@ private void initPoetryLibrary() {
 
             try {
                 while (true) {
+                    if (activityDestroyed) break;
                     // 检测搜索ID变化（新搜索开始）
                     if (searchId != activeSearchId) {
                         activeSearchId = searchId;
@@ -822,6 +1022,7 @@ private void initPoetryLibrary() {
             } catch (Exception e) {
                 Log.e(TAG, "读取线程异常退出", e);
                 runOnUiThread(() -> {
+                    if (!isActivityAlive()) return;
                     isAnalyzing = false;
                     btnAnalyze.setText("分析");
                 });
@@ -969,11 +1170,11 @@ private void initPoetryLibrary() {
             } else {
                 color = (displayScore >= 0) ? "#0000FF" : "#FF0000";
             }
-            String html = "<div style='text-align:center'><font color='#1F6128'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font></div>" +
+            String html = "<div style='text-align:center'><font color='#" + colorToHex(analysisPrimaryTextColor) + "'><b>🐟🐠🐡皮卡鱼🦈🎏🐬🐳🐋</b></font></div>" +
                     "<font color='" + color + "'><b>" + line1.toString() + "</b></font><br/>" +
-                    "<font color='#333333'>" + toFullWidth(line2.toString().trim()) + "</font>";
+                    "<font color='#" + colorToHex(analysisSecondaryTextColor) + "'>" + toFullWidth(line2.toString().trim()) + "</font>";
 
-            // SpannableString 确保 <b> 加粗效果在所有设备（含平板）一致生效
+            // 标题和评分行单独加粗，招法列表保持普通字重
             tvAnalyzeResult.setText(toBoldCenterTitle(html, tvAnalyzeResult));
 
         } catch (Exception e) {
@@ -1109,8 +1310,7 @@ private void initPoetryLibrary() {
 
     /**
      * 将 HTML 解析为 Spanned，再对第一行标题居中。
-     * 字体加粗通过 initViews 中 setTypeface(sans-serif, BOLD) 统一设置，
-     * 不依赖 Html <b> 标签 / StyleSpan，确保平板也能加粗。
+     * 只负责将第一行标题居中，字体粗细由 HTML <b> 标签控制。
      */
     private android.text.Spanned toBoldCenterTitle(String html, TextView tv) {
         android.text.Spanned parsed = android.text.Html.fromHtml(html);
@@ -1118,7 +1318,7 @@ private void initPoetryLibrary() {
         String text = ss.toString();
         int firstNl = text.indexOf('\n');
         if (firstNl > 0) {
-            // 第一行标题居中（字体已在initViews中设为sans-serif BOLD）
+            // 第一行标题居中
             ss.setSpan(new android.text.style.AlignmentSpan.Standard(
                     android.text.Layout.Alignment.ALIGN_CENTER), 0, firstNl,
                     android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1141,5 +1341,107 @@ private void initPoetryLibrary() {
             }
         }
         return sb.toString();
+    }
+
+    // ========== 横屏旋转支持 ==========
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+
+        // 保存棋盘状态
+        String currentFen = chessView != null ? chessView.getFEN() : null;
+        boolean isFlipped = chessView != null && chessView.isBoardFlipped();
+        int currentSide = chessView != null ? chessView.getCurrentSide() : 1;
+
+        // 重新加载布局
+        setContentView(R.layout.activity_analyze);
+
+        // 重新绑定视图引用
+        initViews();
+        setupListeners();
+
+        // 恢复棋盘状态
+        if (chessView != null) {
+            if (currentFen != null) {
+                chessView.setBoardByFENPreserveInitialFEN(currentFen, isFlipped);
+                if (currentMoveIndex >= 0 && currentMoveIndex < moveHistory.size()) {
+                    chessView.restoreMoveHighlightFromUci(moveHistory.get(currentMoveIndex).uci);
+                } else {
+                    chessView.clearSelection();
+                }
+            }
+            if (initialFEN != null && !initialFEN.isEmpty()) {
+                chessView.setCurrentInitialFEN(initialFEN);
+            }
+        }
+
+        setupBackground();
+
+        // 重新设置棋盘监听
+        setupChessView();
+
+        // 恢复UI显示
+        updateTurnIndicator(currentSide);
+        updateMoveList();
+
+        // 恢复诗词显示（tvShiju已在initViews中重新绑定）
+        if (tvShiju != null && poetryList != null && !poetryList.isEmpty()) {
+            showRandomPoetry();
+        }
+
+        // 横屏时程序化调整棋盘尺寸
+        if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            adjustAnalyzeBoardForLandscape();
+        }
+
+        // 如果正在分析，恢复分析状态
+        if (isAnalyzing) {
+            restartAnalysisIfNeeded();
+        }
+
+        Log.d(TAG, "配置变更: " + (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE ? "横屏" : "竖屏"));
+    }
+
+    /**
+     * 横屏时程序化调整棋盘尺寸：
+     * - 棋盘高度 = 屏幕高度
+     * - 棋盘宽度 = 高度 × 棋盘宽高比
+     * - 棋盘中心在屏幕宽度的37%位置
+     */
+    private void adjustAnalyzeBoardForLandscape() {
+        View boardFrame = findViewById(R.id.boardFrame);
+        if (boardFrame == null || chessView == null) return;
+
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(dm);
+        int screenWidth = dm.widthPixels;
+        int screenHeight = dm.heightPixels;
+
+        // 从ChessView获取棋盘宽高比
+        float boardAspect = chessView.getBoardAspect();
+
+        int boardHeight = screenHeight;
+        int boardWidth = (int) (boardHeight * boardAspect);
+
+        // 棋盘中心在屏幕37%位置
+        int boardCenterX = (int) (screenWidth * 0.37);
+        int boardLeft = boardCenterX - boardWidth / 2;
+        if (boardLeft < 0) boardLeft = 0;
+
+        // 使用ConstraintLayout.LayoutParams设置尺寸和位置
+        // 只约束start+top+bottom，不约束end，让宽度由params.width决定
+        androidx.constraintlayout.widget.ConstraintLayout.LayoutParams params =
+                (androidx.constraintlayout.widget.ConstraintLayout.LayoutParams) boardFrame.getLayoutParams();
+        params.width = boardWidth;
+        params.height = boardHeight;
+        params.leftMargin = boardLeft;
+        params.startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        params.endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET;
+        params.topToTop = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        params.bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        boardFrame.setLayoutParams(params);
+
+        Log.d(TAG, "横屏棋盘尺寸: " + boardWidth + "x" + boardHeight + ", left=" + boardLeft);
     }
 }

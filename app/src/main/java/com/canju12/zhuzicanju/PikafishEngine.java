@@ -37,8 +37,8 @@ public class PikafishEngine {
     private static final String NNUE_ASSET_PATH = "Engine/pikafish.nnue";
     private static final String NNUE_FILE_NAME = "pikafish.nnue";
     private static final String ENGINE_BINARY_NAME = "pikafish-armv8";
-    private static final int DEFAULT_DEPTH = 18;
-    private static final long DEFAULT_MOVE_TIME_MS = 500;
+    private static final int DEFAULT_DEPTH = 22;
+    private static final long DEFAULT_MOVE_TIME_MS = 1500;
     private static final long UCI_TIMEOUT_MS = 15000; // UCI 握手超时（15秒）
 
     private Process process;
@@ -132,7 +132,7 @@ public class PikafishEngine {
 
             // 快速检测进程是否立即崩溃
             Thread.sleep(300);
-            if (!process.isAlive()) {
+            if (!isProcessAlive()) {
                 int exitCode = process.exitValue();
                 String stderr = readStderr();
                 Log.w(TAG, "直接执行后进程退出，exitCode=" + exitCode +
@@ -168,7 +168,7 @@ public class PikafishEngine {
                 process = pb.start();
 
                 Thread.sleep(300);
-                if (!process.isAlive()) {
+                if (!isProcessAlive()) {
                     int exitCode = process.exitValue();
                     String stderr = readStderr();
                     Log.w(TAG, "linker 后进程退出，exitCode=" + exitCode +
@@ -191,7 +191,7 @@ public class PikafishEngine {
                     process = pb.start();
 
                     Thread.sleep(300);
-                    if (!process.isAlive()) {
+                    if (!isProcessAlive()) {
                         int exitCode = process.exitValue();
                         String stderr = readStderr();
                         Log.w(TAG, "shell 后进程退出，exitCode=" + exitCode +
@@ -388,11 +388,35 @@ public class PikafishEngine {
                 sendCommand(goCmd);
 
                 long safetyTimeout = maxTimeMs + 5000; // 安全超时
-                boolean sentStop = false;
-
                 String line;
-                while (analysisActive && (line = readLine()) != null) {
+                while (analysisActive) {
                     long elapsed = System.currentTimeMillis() - startTime;
+                    if (elapsed > safetyTimeout) {
+                        Log.w(TAG, "搜索超时 (" + elapsed + "ms)");
+                        try {
+                            sendCommand("stop");
+                        } catch (Exception stopError) {
+                            Log.w(TAG, "超时后发送 stop 失败", stopError);
+                        }
+                        analysisActive = false;
+                        if (callback != null) {
+                            new Handler(Looper.getMainLooper()).post(() ->
+                                    callback.onError("搜索超时"));
+                        }
+                        return;
+                    }
+                    if (reader == null || !reader.ready()) {
+                        Thread.sleep(20);
+                        continue;
+                    }
+                    line = readLine();
+                    if (line == null) {
+                        if (callback != null) {
+                            new Handler(Looper.getMainLooper()).post(() ->
+                                    callback.onError("引擎输出流关闭"));
+                        }
+                        return;
+                    }
 
                     // 只记录 info 的摘要，减少日志量
                     if (line.startsWith("bestmove")) {
@@ -408,11 +432,6 @@ public class PikafishEngine {
                     }
 
                     // 安全超时：发送 stop
-                    if (!sentStop && elapsed > safetyTimeout) {
-                        Log.w(TAG, "搜索超时 (" + elapsed + "ms)，发送 stop");
-                        sendCommand("stop");
-                        sentStop = true;
-                    }
                 }
 
                 // 流关闭
@@ -671,6 +690,21 @@ public class PikafishEngine {
         writer.write(cmd + "\n");
         writer.flush();
         Log.v(TAG, ">>> " + cmd);
+    }
+
+    private boolean isProcessAlive() {
+        if (process == null) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return process.isAlive();
+        }
+        try {
+            process.exitValue();
+            return false;
+        } catch (IllegalThreadStateException e) {
+            return true;
+        }
     }
 
     private String readLine() throws Exception {

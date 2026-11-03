@@ -14,19 +14,30 @@
 package com.canju12.zhuzicanju;
 
 import android.Manifest;
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.util.Log;
+import android.content.res.Configuration;
+import android.text.TextUtils;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.animation.AlphaAnimation;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
 import android.widget.*;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
@@ -40,6 +51,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import android.widget.ImageView;
 import android.graphics.Bitmap;
 import java.io.FileWriter;
@@ -48,6 +61,7 @@ public class MainActivity extends AppCompatActivity {
 
     // UI组件
     private TextView tvTitle;
+    private TextView tvTitleDetail;
     private TextView tvTime;
     private TextView tvAccuracy;
     private ChessView chessView;
@@ -62,6 +76,7 @@ public class MainActivity extends AppCompatActivity {
     private Button btnNonono;
     private Button btnYesyes;
     private AlertDialog tikuDialog = null;
+    private long lastTurnIndicatorClickTime = 0L;
 
     // 数据管理
     private TikuManager tikuManager;
@@ -84,8 +99,18 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvShiju;
     private List<String> poetryList;
     private Handler handler = new Handler();
+    private Handler uiHandler = new Handler();
+    private Handler questionSelectorHandler = new Handler();
+    private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
     private int minuteCounter = 0;
     private final long MINUTE_DELAY = 60000;
+    private ViewGroup pageFlipContainer;
+    private View pageFlipOverlay;
+    private int pageFlipDirection = 0;
+    private boolean pageFlipRunning = false;
+    private int pendingPageFlipDirection = 0;
+    private Bitmap pendingPageFlipSnapshot;
+    private volatile boolean activityDestroyed = false;
 
     // 权限请求码
     private static final int REQUEST_PERMISSION_CODE = 100;
@@ -112,25 +137,30 @@ public class MainActivity extends AppCompatActivity {
     private boolean longCheckHandled = false;  // 长将判负是否已处理    // 当前题目是否已统计过（防重复统计）
     // 题目是否已结束过（无论重来/重下/悔棋，第一次结束结果为准，不再重复统计）
     private boolean questionFinished = false;
+    // 每次换题递增，令旧题目的异步引擎回调失效
+    private int aiQuestionGeneration = 0;
     private Handler pikafishHandler = new Handler();
     private Runnable pikafishWatchdog;
     // 局面合法性检查器
     private final PositionValidator positionValidator = new PositionValidator();
     // ================================
 
+    private boolean isActivityAlive() {
+        return !activityDestroyed && !isFinishing();
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        checkAndRequestPermissions();
         // 检查并请求存储权限
         checkAndRequestPermissions();
 
         // ===== 首次运行显示说明书 =====
         if (isFirstRun()) {
             // 延迟显示，确保界面已加载
-            new Handler().postDelayed(new Runnable() {
+            uiHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
                     showFirstRunDialog();
@@ -146,8 +176,17 @@ public class MainActivity extends AppCompatActivity {
         setupChessView();
         // Pikafish 引擎不在这里启动，等人类走完第一步再触发
 
+        // 横屏启动时程序化调整棋盘尺寸
+        if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            chessView.post(new Runnable() {
+                @Override
+                public void run() {
+                    adjustBoardSizeForLandscape();
+                }
+            });
+        }
+
         startTimer();
-        tvShiju = findViewById(R.id.shiju);
 
         initPoetryLibrary();
         startPoetryTimer();
@@ -158,9 +197,8 @@ public class MainActivity extends AppCompatActivity {
 
         tikuManager = new TikuManager(this);
 
-        // 检查是否从错题本跳转
-        if (getIntent() != null && getIntent().hasExtra("load_wrong")) {
-            handleWrongBookIntentIfNeeded();
+        // 检查是否从错题本/收藏夹页跳转
+        if (handleIncomingTikuIntentIfNeeded()) {
             return;
         }
 
@@ -181,7 +219,7 @@ public class MainActivity extends AppCompatActivity {
                 currentQuestionIndex = 0;
                 loadCurrentQuestion();
             } else {
-                Toast.makeText(this, "未找到题库文件，请检查assets目录", Toast.LENGTH_LONG).show();
+                ToastUtil.makeText(this, "未找到题库文件，请检查assets目录", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -190,27 +228,83 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         Log.d("MainActivity", "onNewIntent 被调用");
-        handleWrongBookIntentIfNeeded();
+        handleIncomingTikuIntentIfNeeded();
     }
 
     /**
      * 处理从错题本传来的数据
      */
-    private void handleWrongBookIntentIfNeeded() {
+    private boolean handleIncomingTikuIntentIfNeeded() {
         Intent currentIntent = getIntent();
-        if (currentIntent == null) return;
+        if (currentIntent == null) return false;
 
-        boolean isFromWrongBook = currentIntent.hasExtra("load_wrong");
-        Log.d("MainActivity", "handleWrongBookIntentIfNeeded - isFromWrongBook: " + isFromWrongBook);
+        if (currentIntent.hasExtra("load_tiku_name")) {
+            String tikuName = currentIntent.getStringExtra("load_tiku_name");
+            int tikuIndex = currentIntent.getIntExtra("load_tiku_index", -1);
+            String requestedRawFen = currentIntent.getStringExtra("load_tiku_raw_fen");
+            currentIntent.removeExtra("load_tiku_name");
+            currentIntent.removeExtra("load_tiku_index");
+            currentIntent.removeExtra("load_tiku_raw_fen");
+            if (TextUtils.isEmpty(tikuName)) {
+                ToastUtil.makeText(this, "加载题库失败: 参数无效", Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            if (tikuManager != null) {
+                tikuManager.reloadTiku();
+            }
+            TikuData targetTiku = tikuManager == null ? null : tikuManager.getTikuByName(tikuName);
+            if (targetTiku == null) {
+                ToastUtil.makeText(this, "加载题库失败: 未找到 " + tikuName, Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            if (tikuIndex > targetTiku.getTotalCount()
+                    || (tikuIndex <= 0 && TextUtils.isEmpty(requestedRawFen))) {
+                ToastUtil.makeText(this, "加载题库失败: 序号超出范围", Toast.LENGTH_SHORT).show();
+                return true;
+            }
 
-        if (isFromWrongBook) {
+            int targetPosition = tikuIndex - 1;
+            if (!TextUtils.isEmpty(requestedRawFen)) {
+                // 收藏夹缩略图传入原始行，优先按内容定位，避免解析后索引错位。
+                if (targetPosition < 0
+                        || targetPosition >= targetTiku.getTotalCount()
+                        || !requestedRawFen.equals(targetTiku.getRawFEN(targetPosition))) {
+                    targetPosition = -1;
+                    for (int i = 0; i < targetTiku.getTotalCount(); i++) {
+                        if (requestedRawFen.equals(targetTiku.getRawFEN(i))) {
+                            targetPosition = i;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (targetPosition < 0 || targetPosition >= targetTiku.getTotalCount()) {
+                ToastUtil.makeText(this, "加载题目失败: 未找到对应局面", Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            loadSelectedQuestion(targetPosition, targetTiku);
+            return true;
+        }
+
+        if (currentIntent.hasExtra("load_wrong")) {
             int wrongIndex = currentIntent.getIntExtra("wrong_index", -1);
-            Log.d("MainActivity", "handleWrongBookIntentIfNeeded - wrongIndex: " + wrongIndex);
+            Log.d("MainActivity", "handleIncomingTikuIntentIfNeeded - wrongIndex: " + wrongIndex);
             handleWrongBookIntent(wrongIndex);
-            // 清除Intent数据，防止重复处理
             currentIntent.removeExtra("load_wrong");
             currentIntent.removeExtra("wrong_index");
+            return true;
         }
+
+        if (currentIntent.hasExtra("load_favorite")) {
+            int favoriteIndex = currentIntent.getIntExtra("favorite_index", -1);
+            Log.d("MainActivity", "handleIncomingTikuIntentIfNeeded - favoriteIndex: "
+                    + favoriteIndex);
+            handleFavoriteBookIntent(favoriteIndex);
+            currentIntent.removeExtra("load_favorite");
+            currentIntent.removeExtra("favorite_index");
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -222,7 +316,7 @@ public class MainActivity extends AppCompatActivity {
         Log.d("MainActivity", "传入序号: " + index);
 
         if (index <= 0) {
-            Toast.makeText(this, "加载错题失败: 序号无效", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "加载错题失败: 序号无效", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -245,7 +339,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (wrongBookTiku == null) {
-            Toast.makeText(this, "错题本不存在", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "错题本不存在", Toast.LENGTH_SHORT).show();
             Log.e("MainActivity", "错题本不存在！");
             return;
         }
@@ -258,7 +352,7 @@ public class MainActivity extends AppCompatActivity {
         // 检查序号是否有效
         int position = index - 1;
         if (position < 0 || position >= wrongList.size()) {
-            Toast.makeText(this, "错题序号无效，共 " + wrongList.size() + " 题", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "错题序号无效，共 " + wrongList.size() + " 题", Toast.LENGTH_SHORT).show();
             Log.e("MainActivity", "序号无效: position=" + position + ", size=" + wrongList.size());
             return;
         }
@@ -266,11 +360,34 @@ public class MainActivity extends AppCompatActivity {
         // 获取对应序号的FEN
         String fen = wrongList.get(position);
         if (fen == null || fen.isEmpty()) {
-            Toast.makeText(this, "加载错题失败", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "加载错题失败", Toast.LENGTH_SHORT).show();
             return;
         }
 
         Log.d("MainActivity", "加载FEN: " + fen);
+
+        // 加载题目
+        boolean flipped = wrongBookTiku.getFlipped(position);  // 从TikuData获取翻转状态
+        String cleanFen = fen;  // currentFenList已去掉2#前缀，直接使用
+
+        PositionValidator.Result fenFormatResult = positionValidator.validateFenFormat(cleanFen);
+        if (!fenFormatResult.valid) {
+            ToastUtil.makeText(this, "加载错题失败：FEN格式不合法，" + fenFormatResult.reason, Toast.LENGTH_LONG).show();
+            Log.w("MainActivity", "错题本FEN格式不合法: " + fenFormatResult.reason + " FEN=" + cleanFen);
+            return;
+        }
+
+        if (!chessView.setBoardByFEN(cleanFen, flipped)) {
+            ToastUtil.makeText(this, "加载残局失败：FEN解析失败", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        PositionValidator.Result vr = positionValidator.validate(chessView.chessBoard);
+        if (!vr.valid) {
+            ToastUtil.makeText(this, "加载错题失败：局面不合法，" + vr.reason, Toast.LENGTH_LONG).show();
+            Log.w("MainActivity", "错题本局面不合法: " + vr.reason + " FEN=" + cleanFen);
+            return;
+        }
 
         // 设置当前题库为错题本
         currentTiku = wrongBookTiku;
@@ -279,16 +396,12 @@ public class MainActivity extends AppCompatActivity {
         totalQuestions = wrongList.size();
         tikuManager.setCurrentTiku(wrongBookTiku);
 
-        // 加载题目
-        boolean flipped = currentTiku.getFlipped(position);  // 从TikuData获取翻转状态
-        String cleanFen = fen;  // currentFenList已去掉2#前缀，直接使用
-        chessView.setBoardByFEN(cleanFen, flipped);
         updateTitle();
         updateAccuracy();
         elapsedSeconds = 0;
 
         // ===== 更新行棋指示器（红方先走） =====
-        updateTurnIndicator(1);
+        updateTurnIndicator(chessView.getCurrentSide());
         // =====================================
         // ===== 设置AI对手方 =====
         setupPikafishForQuestion();
@@ -297,7 +410,97 @@ public class MainActivity extends AppCompatActivity {
         saveCurrentQuestionToPreferences();
         // ========================
 
-        Toast.makeText(this, "已加载错题本第 " + index + " 题", Toast.LENGTH_LONG).show();
+        ToastUtil.makeText(this, "已加载错题本第 " + index + " 题", Toast.LENGTH_LONG).show();
+    }
+
+    /**
+     * 从收藏夹缩略图加载对应题目。
+     * 与错题本使用独立入口，按收藏夹文件中的序号加载，避免走通用题库分支。
+     *
+     * @param index 收藏夹题目序号（从1开始）
+     */
+    private void handleFavoriteBookIntent(int index) {
+        Log.d("MainActivity", "========== handleFavoriteBookIntent 开始 ==========");
+        Log.d("MainActivity", "传入序号: " + index);
+
+        if (index <= 0) {
+            ToastUtil.makeText(this, "加载收藏夹失败: 序号无效", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        tikuManager.reloadTiku();
+
+        TikuData favoriteBookTiku = null;
+        for (TikuData tiku : tikuManager.getTikuList()) {
+            if ("收藏夹".equals(tiku.getName())) {
+                favoriteBookTiku = tiku;
+                break;
+            }
+        }
+
+        if (favoriteBookTiku == null) {
+            ToastUtil.makeText(this, "收藏夹不存在", Toast.LENGTH_SHORT).show();
+            Log.e("MainActivity", "收藏夹不存在！");
+            return;
+        }
+
+        List<String> favoriteList = favoriteBookTiku.getFenList();
+        int position = index - 1;
+        if (position < 0 || position >= favoriteList.size()) {
+            ToastUtil.makeText(this, "收藏夹序号无效，共 " + favoriteList.size() + " 题",
+                    Toast.LENGTH_SHORT).show();
+            Log.e("MainActivity", "收藏夹序号无效: position=" + position
+                    + ", size=" + favoriteList.size());
+            return;
+        }
+
+        String fen = favoriteList.get(position);
+        if (fen == null || fen.isEmpty()) {
+            ToastUtil.makeText(this, "加载收藏夹失败", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        Log.d("MainActivity", "加载收藏夹FEN: " + fen);
+
+        boolean flipped = favoriteBookTiku.getFlipped(position);
+        PositionValidator.Result fenFormatResult = positionValidator.validateFenFormat(fen);
+        if (!fenFormatResult.valid) {
+            ToastUtil.makeText(this,
+                    "加载收藏夹失败：FEN格式不合法，" + fenFormatResult.reason,
+                    Toast.LENGTH_LONG).show();
+            Log.w("MainActivity", "收藏夹FEN格式不合法: " + fenFormatResult.reason
+                    + " FEN=" + fen);
+            return;
+        }
+
+        if (!chessView.setBoardByFEN(fen, flipped)) {
+            ToastUtil.makeText(this, "加载收藏夹失败：FEN解析失败", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        PositionValidator.Result vr = positionValidator.validate(chessView.chessBoard);
+        if (!vr.valid) {
+            ToastUtil.makeText(this,
+                    "加载收藏夹失败：局面不合法，" + vr.reason,
+                    Toast.LENGTH_LONG).show();
+            Log.w("MainActivity", "收藏夹局面不合法: " + vr.reason + " FEN=" + fen);
+            return;
+        }
+
+        currentTiku = favoriteBookTiku;
+        currentFenList = favoriteList;
+        currentQuestionIndex = position;
+        totalQuestions = favoriteList.size();
+        tikuManager.setCurrentTiku(favoriteBookTiku);
+
+        updateTitle();
+        updateAccuracy();
+        elapsedSeconds = 0;
+        updateTurnIndicator(chessView.getCurrentSide());
+        setupPikafishForQuestion();
+        saveCurrentQuestionToPreferences();
+
+        ToastUtil.makeText(this, "已加载收藏夹第 " + index + " 题", Toast.LENGTH_LONG).show();
     }
 
     // ========== 权限相关方法 ==========
@@ -343,7 +546,7 @@ public class MainActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQUEST_PERMISSION_CODE) {
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "存储权限已授予", Toast.LENGTH_SHORT).show();
+                ToastUtil.makeText(this, "存储权限已授予", Toast.LENGTH_SHORT).show();
                 createNecessaryFolders();
                 if (tikuManager != null) {
                     tikuManager.reloadTiku();
@@ -367,7 +570,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             } else {
-                Toast.makeText(this, "需要存储权限才能管理题库文件", Toast.LENGTH_LONG).show();
+                ToastUtil.makeText(this, "需要存储权限才能管理题库文件", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -378,7 +581,7 @@ public class MainActivity extends AppCompatActivity {
         if (requestCode == REQUEST_PERMISSION_CODE) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 if (Environment.isExternalStorageManager()) {
-                    Toast.makeText(this, "存储权限已授予", Toast.LENGTH_SHORT).show();
+                    ToastUtil.makeText(this, "存储权限已授予", Toast.LENGTH_SHORT).show();
                     createNecessaryFolders();
                     if (tikuManager != null) {
                         tikuManager.reloadTiku();
@@ -402,7 +605,7 @@ public class MainActivity extends AppCompatActivity {
                         }
                     }
                 } else {
-                    Toast.makeText(this, "需要存储权限才能管理题库文件", Toast.LENGTH_LONG).show();
+                    ToastUtil.makeText(this, "需要存储权限才能管理题库文件", Toast.LENGTH_LONG).show();
                 }
             }
         }
@@ -460,7 +663,7 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     if (wrongBookFile.createNewFile()) {
                         Log.d("MainActivity", "错题本.txt文件创建成功: " + wrongBookFile.getAbsolutePath());
-                        Toast.makeText(this, "错题本.txt文件已创建", Toast.LENGTH_SHORT).show();
+                        ToastUtil.makeText(this, "错题本.txt文件已创建", Toast.LENGTH_SHORT).show();
 
                         // 写入初始内容
                         java.io.FileWriter writer = new java.io.FileWriter(wrongBookFile);
@@ -480,16 +683,38 @@ public class MainActivity extends AppCompatActivity {
                 Log.d("MainActivity", "错题本.txt文件已存在: " + wrongBookFile.getAbsolutePath());
             }
 
+            // ========== 在 tiku 文件夹下创建 收藏夹.txt 文件 ==========
+            File favoriteBookFile = new File(tikuDir, "收藏夹.txt");
+            if (!favoriteBookFile.exists()) {
+                try {
+                    if (favoriteBookFile.createNewFile()) {
+                        Log.d("MainActivity", "收藏夹.txt文件创建成功: " + favoriteBookFile.getAbsolutePath());
+                        java.io.FileWriter writer = new java.io.FileWriter(favoriteBookFile);
+                        writer.write("# 收藏夹\n");
+                        writer.write("# 格式：FEN | 标记时间\n");
+                        writer.write("# 每行一个收藏夹\n");
+                        writer.close();
+                    } else {
+                        Log.e("MainActivity", "收藏夹.txt文件创建失败");
+                    }
+                } catch (Exception e) {
+                    Log.e("MainActivity", "创建收藏夹.txt文件异常: " + e.getMessage());
+                }
+            } else {
+                Log.d("MainActivity", "收藏夹.txt文件已存在: " + favoriteBookFile.getAbsolutePath());
+            }
+
             // 打印最终结果
             Log.d("MainActivity", "========== 文件夹创建完成 ==========");
             Log.d("MainActivity", "canju12: " + canju12Dir.getAbsolutePath() + " 存在=" + canju12Dir.exists());
             Log.d("MainActivity", "uistyle: " + uiStyleDir.getAbsolutePath() + " 存在=" + uiStyleDir.exists());
             Log.d("MainActivity", "tiku: " + tikuDir.getAbsolutePath() + " 存在=" + tikuDir.exists());
             Log.d("MainActivity", "错题本.txt: " + wrongBookFile.getAbsolutePath() + " 存在=" + wrongBookFile.exists());
+            Log.d("MainActivity", "收藏夹.txt: " + favoriteBookFile.getAbsolutePath() + " 存在=" + favoriteBookFile.exists());
 
         } catch (Exception e) {
             Log.e("MainActivity", "创建文件夹失败: " + e.getMessage());
-            Toast.makeText(this, "创建文件夹失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "创建文件夹失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -524,13 +749,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showRandomPoetry() {
-        if (poetryList == null || poetryList.isEmpty()) return;
+        if (tvShiju == null || poetryList == null || poetryList.isEmpty()) return;
         List<String> normalList = new ArrayList<>(poetryList);
         if (normalList.contains("🔥🔥刘霸天为您加油🔥🔥")) {
             normalList.remove("🔥🔥刘霸天为您加油🔥🔥🔥");
         }
         if (normalList.isEmpty()) {
-            tvShiju.setText("暂无可用诗句");
+            setShijuText("暂无可用诗句");
             return;
         }
         Random random = new Random();
@@ -540,11 +765,31 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void displaySpecialMessage() {
-        String text = "🔥🔥刘霸天为您加油！🔥🔥🔥";
+        if (tvShiju == null) return;
+        String text = "🔥🔥一二残局🔥🔥🔥";
         animateText(tvShiju, text);
     }
 
+    /** 设置shiju文字，横屏时自动转为竖排（每字换行），正确处理emoji等unicode补充字符 */
+    private void setShijuText(String text) {
+        if (tvShiju == null) return;
+        if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            while (i < text.length()) {
+                int cp = text.codePointAt(i);
+                if (sb.length() > 0) sb.append("\n");
+                sb.appendCodePoint(cp);
+                i += Character.charCount(cp);
+            }
+            tvShiju.setText(sb.toString());
+        } else {
+            tvShiju.setText(text);
+        }
+    }
+
     private void animateText(TextView textView, String newText) {
+        if (textView == null) return;
         AlphaAnimation fadeOut = new AlphaAnimation(1.0f, 0.0f);
         fadeOut.setDuration(500);
         fadeOut.setFillAfter(true);
@@ -556,7 +801,12 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onAnimationEnd(android.view.animation.Animation animation) {
-                textView.setText(newText);
+                // 横屏时shiju需要竖排显示
+                if (textView == tvShiju) {
+                    setShijuText(newText);
+                } else {
+                    textView.setText(newText);
+                }
                 AlphaAnimation fadeIn = new AlphaAnimation(0.0f, 1.0f);
                 fadeIn.setDuration(500);
                 fadeIn.setFillAfter(true);
@@ -573,9 +823,31 @@ public class MainActivity extends AppCompatActivity {
     private void initViews() {
         tvTitle = findViewById(R.id.tv_title);
         tvTitle.setTypeface(android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.BOLD));
+        tvTitle.setMaxLines(1);
+        tvTitle.setEllipsize(TextUtils.TruncateAt.END);
+        tvTitleDetail = findViewById(R.id.tv_title_detail);
+        if (tvTitleDetail != null) {
+            tvTitleDetail.setMaxLines(1);
+            tvTitleDetail.setEllipsize(TextUtils.TruncateAt.END);
+        }
         tvTime = findViewById(R.id.tv_time);
+        tvTime.setTypeface(android.graphics.Typeface.MONOSPACE);
+        tvTime.setIncludeFontPadding(false);
+        tvTime.setSingleLine(true);
+        tvTime.setMaxLines(1);
+        tvTime.setEllipsize(TextUtils.TruncateAt.END);
+        tvTime.setGravity(android.view.Gravity.CENTER);
+        tvTime.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
         tvAccuracy = findViewById(R.id.tv_accuracy);
+        tvAccuracy.setTypeface(android.graphics.Typeface.MONOSPACE);
+        tvAccuracy.setIncludeFontPadding(false);
+        tvAccuracy.setSingleLine(true);
+        tvAccuracy.setMaxLines(1);
+        tvAccuracy.setEllipsize(TextUtils.TruncateAt.END);
+        tvAccuracy.setGravity(android.view.Gravity.CENTER);
+        tvAccuracy.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
         chessView = findViewById(R.id.chessView);
+        tvShiju = findViewById(R.id.shiju);
 
         btnTiku = findViewById(R.id.btnTiku);
         btnSelectLevel = findViewById(R.id.btnSelectLevel);
@@ -586,8 +858,8 @@ public class MainActivity extends AppCompatActivity {
         btnNonono = findViewById(R.id.btnNonono);
         btnYesyes = findViewById(R.id.btnYesyes);
         tvQQGroup = findViewById(R.id.tvQQGroup);
-        // 动态设置Readme文字，从BuildConfig读取版本名
-        tvQQGroup.setText("Readme V" + BuildConfig.VERSION_NAME);
+        // 动态设置版本文字，从BuildConfig读取版本名
+        tvQQGroup.setText("一二残局 V" + BuildConfig.VERSION_NAME + "    ");
 
         ivTurnIndicator = findViewById(R.id.ivTurnIndicator);  // 确保这行存在
 
@@ -633,6 +905,8 @@ public class MainActivity extends AppCompatActivity {
                 Log.d("MainActivity", "棋盘背景使用默认");
             }
 
+            applyRoomButtonTheme(roomBitmap);
+
         } catch (Throwable e) {
             // 用 Throwable 而非 Exception：内置 PNG 在某些硬件上解码可能抛 OOM 等 Error
             Log.e("MainActivity", "设置背景失败: " + e.getMessage());
@@ -649,11 +923,26 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void applyRoomButtonTheme(Bitmap roomBitmap) {
+        try {
+            View content = findViewById(android.R.id.content);
+            UiThemeHelper.applyRoomButtonTheme(this, content, roomBitmap);
+        } catch (Throwable t) {
+            Log.w("MainActivity", "按钮主题应用失败: " + t.getMessage());
+        }
+    }
+
     private void setupListeners() {
         btnTiku.setOnClickListener(v -> showTikuSelectorDialog());
         btnSelectLevel.setOnClickListener(v -> showLevelDialog());
         btnRegret.setOnClickListener(v -> regretMove());
-        btnCopy.setOnClickListener(v -> copyFEN());
+        // 收藏夹按钮：只保存当前题目，不统计正确率，也不自动进入下一题
+        btnCopy.setOnClickListener(v -> addCurrentQuestionToFavoriteBook());
+        btnCopy.setOnLongClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, FavoriteBookActivity.class);
+            startActivity(intent);
+            return true;
+        });
         btnRepeat.setOnClickListener(v -> {
             // 从当前题库重新加载本题
             loadCurrentQuestion();
@@ -661,96 +950,63 @@ public class MainActivity extends AppCompatActivity {
         });
         // 长按重来 → 载入上一题；若是第一题则提示
         btnRepeat.setOnLongClickListener(v -> {
+            if (pageFlipRunning) {
+                return true;
+            }
             if (currentTiku == null) {
-                Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
+                ToastUtil.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
                 return true;
             }
             currentFenList = currentTiku.getFenList();
             if (currentFenList == null || currentFenList.isEmpty()) {
-                Toast.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
+                ToastUtil.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
                 return true;
             }
             if (currentQuestionIndex <= 0) {
-                Toast.makeText(this, "已是题库中第一题！", Toast.LENGTH_SHORT).show();
+                ToastUtil.makeText(this, "已是题库中第一题！", Toast.LENGTH_SHORT).show();
                 return true;
             }
+            preparePageFlip(-1);
             loadValidQuestion(currentQuestionIndex - 1, 0);
+            ToastUtil.makeText(this, "已载入上一局！", Toast.LENGTH_SHORT).show();
             return true;
         });
         btnAnalyze.setOnClickListener(v -> analyzePosition());
         btnNonono.setOnClickListener(v -> markAsNotMastered());
         btnYesyes.setOnClickListener(v -> markAsMastered());
-        // ===== 添加QQ群双击监听 =====
-        tvQQGroup.setOnClickListener(new View.OnClickListener() {
-            private long lastClickTime = 0;
-
-            @Override
-            public void onClick(View v) {
-                long currentTime = System.currentTimeMillis();
-                if (currentTime - lastClickTime < 500) {
-                    // 双击检测到，弹出对话框
-                    showQQGroupDialog();
-                }
-                lastClickTime = currentTime;
+        ivTurnIndicator.setOnClickListener(v -> {
+            long now = System.currentTimeMillis();
+            if (now - lastTurnIndicatorClickTime < 350L) {
+                lastTurnIndicatorClickTime = 0L;
+                copyFEN();
+            } else {
+                lastTurnIndicatorClickTime = now;
             }
         });
-        // ===== 行棋指示器双击进入错题本 =====
-        // 行棋指示器双击进入错题本
-        ivTurnIndicator.setOnClickListener(new View.OnClickListener() {
-            private long lastClickTime = 0;
-
-            @Override
-            public void onClick(View v) {
-                long currentTime = System.currentTimeMillis();
-                Log.d("MainActivity", "行棋指示器被点击, 间隔: " + (currentTime - lastClickTime) + "ms");
-                if (currentTime - lastClickTime < 500) {
-                    Log.d("MainActivity", "检测到双击, 进入错题本");
-                    Intent intent = new Intent(MainActivity.this, WrongBookActivity.class);
-                    startActivity(intent);
-                }
-                lastClickTime = currentTime;
-            }
+        // 长按版本号打开使用说明
+        tvQQGroup.setOnLongClickListener(v -> {
+            showQQGroupDialog();
+            return true;
+        });
+        // 长按行棋指示器进入错题本
+        ivTurnIndicator.setOnLongClickListener(v -> {
+            Intent intent = new Intent(MainActivity.this, WrongBookActivity.class);
+            startActivity(intent);
+            return true;
         });
         // ====================================
     }
     /**
-     * 显示致谢和使用说明对话框（使用 readme.xml 布局）
+     * 显示致谢和使用说明对话框（加载 assets/readme.html）
      */
     private void showQQGroupDialog() {
         try {
-            AlertDialog.Builder builder = new AlertDialog.Builder(this, R.style.Theme_YourApp_Fullscreen);
-
-            View dialogView = getLayoutInflater().inflate(R.layout.readme, null);
-            builder.setView(dialogView);
-
-            builder.setPositiveButton("知道了", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                }
-            });
-
-            AlertDialog dialog = builder.create();
-
-            dialog.show();
-
-            // 设置对话框宽度为屏幕90%，高度自适应
-            android.view.WindowManager.LayoutParams params = dialog.getWindow().getAttributes();
-            params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.90);
-            params.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
-            dialog.getWindow().setAttributes(params);
-
-            // 设置按钮文字颜色
-            Button positiveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            if (positiveButton != null) {
-                positiveButton.setTextColor(getResources().getColor(android.R.color.holo_green_dark));
-                positiveButton.setTextSize(18);
-            }
+            showHtmlAssetDialog("readme.html", "知道了", true);
 
         } catch (Exception e) {
             Log.e("MainActivity", "显示说明对话框失败: " + e.getMessage());
             // 降级为Toast
-            Toast.makeText(this, "QQ群：635808985 · 1003608168 · 94846686", Toast.LENGTH_LONG).show();
+            ToastUtil.makeText(this, "QQ群：635808985 · 1003608168 · 94846686", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -762,6 +1018,7 @@ public class MainActivity extends AppCompatActivity {
                 updateTurnIndicator(side);
             }
         });
+        chessView.setMoveSoundEnabled(true);
 
         chessView.setOnGameListener(new ChessView.OnGameListener() {
             @Override
@@ -775,21 +1032,18 @@ public class MainActivity extends AppCompatActivity {
                     chineseRules.recordMove(
                             chessView.isLastMoveCapture(),
                             chessView.isLastMoveCheck(),
-                            chessView.isLastMoveChase(),
                             -chessView.getCurrentSide(),
                             chessView.chessBoard,
                             chessView.getCurrentSide());
 
-                    // 检查违规判负（长将或长捉）
+                    // 检查长将判负
                     if (chineseRules.isViolation() && !longCheckHandled && !questionFinished) {
                         longCheckHandled = true;
-                        questionFinished = true;  // 题目已结束，后续重来/悔棋不再统计
-                        if (!questionRecorded) { notMasteredCount++; questionRecorded = true; }
-                        updateAccuracy();
-                        addToWrongBookIfNotExists();
                         ChineseRules.ViolationResult vr = chineseRules.getViolationResult();
-                        Toast.makeText(MainActivity.this, vr.description, Toast.LENGTH_LONG).show();
-                        showRetryDialog(vr.description + "！是否重来？");
+                        int loserSide = chineseRules.getViolationSide();
+                        if (vr != null && loserSide != 0) {
+                            finishAiQuestion(-loserSide, vr.description);
+                        }
                         return;
                     }
 
@@ -805,13 +1059,15 @@ public class MainActivity extends AppCompatActivity {
                             && !chineseRules.isRepetitionToastShown()
                             && !longCheckHandled) {
                         chineseRules.markRepetitionToastShown();
-                        Toast.makeText(MainActivity.this,
+                        ToastUtil.makeText(MainActivity.this,
                                 "出现重复局面，请变招",
                                 Toast.LENGTH_SHORT).show();
                     }
 
                     // 如果轮到 Pikafish 走棋，触发AI
-                    if (chessView.getCurrentSide() == pikafishSide) {
+                    if (chessView.getCurrentSide() == pikafishSide
+                            && !isPikafishThinking
+                            && !questionFinished) {
                         triggerPikafish();
                     }
                 }
@@ -819,28 +1075,10 @@ public class MainActivity extends AppCompatActivity {
             }
             @Override
             public void onGameOver(int winner) {
+                if (!isActivityAlive()) return;
                 if (pikafishMode) {
                     // AI对战模式
-                    if (winner == humanSide) {
-                        // 人类获胜 → 进入下一题
-                        Toast.makeText(MainActivity.this, "🎉 你赢了！进入下一题", Toast.LENGTH_SHORT).show();
-                        if (!questionFinished && !questionRecorded) {
-                            winCount++; questionRecorded = true;
-                        }
-                        questionFinished = true;
-                        updateAccuracy();
-                        markQuestionCompleted();
-                        new Handler().postDelayed(() -> nextQuestion(), 800);
-                    } else {
-                        // AI获胜 → 加入错题本（防重复），显示重试对话框
-                        if (!questionFinished && !questionRecorded) {
-                            notMasteredCount++; questionRecorded = true;
-                        }
-                        questionFinished = true;
-                        updateAccuracy();
-                        addToWrongBookIfNotExists();
-                        showRetryDialog("🤖 你输了！是否重来？");
-                    }
+                    finishAiQuestion(winner, null);
                 } else {
                     // 普通练习模式（原有逻辑）
                     if (winner == 1) {
@@ -850,10 +1088,10 @@ public class MainActivity extends AppCompatActivity {
                         questionFinished = true;
                         updateAccuracy();
                         markQuestionCompleted();
-                        Toast.makeText(MainActivity.this, "🎉 红方胜利！进入下一题", Toast.LENGTH_SHORT).show();
-                        new Handler().postDelayed(() -> nextQuestion(), 800);
+                        ToastUtil.makeText(MainActivity.this, "🎉 红方胜利！进入下一题", Toast.LENGTH_SHORT).show();
+                        uiHandler.postDelayed(() -> nextQuestion(), 800);
                     } else {
-                        Toast.makeText(MainActivity.this, "黑方胜利！", Toast.LENGTH_SHORT).show();
+                        ToastUtil.makeText(MainActivity.this, "黑方胜利！", Toast.LENGTH_SHORT).show();
                     }
                 }
             }
@@ -865,17 +1103,7 @@ public class MainActivity extends AppCompatActivity {
      * @param side 当前走棋方（1=红方，-1=黑方）
      */
     private void updateTurnIndicator(int side) {
-        if (ivTurnIndicator != null) {
-            if (side == 1) {
-                // 红方走棋，显示红帅
-                ivTurnIndicator.setImageResource(R.drawable.rk);
-                Log.d("MainActivity", "显示红帅 rk");
-            } else {
-                // 黑方走棋，显示黑将
-                ivTurnIndicator.setImageResource(R.drawable.bk);
-                Log.d("MainActivity", "显示黑将 bk");
-            }
-        }
+        UiThemeHelper.applyTurnIndicatorImage(this, ivTurnIndicator, side);
     }
     private void initData() {
         updateTitle();
@@ -883,16 +1111,16 @@ public class MainActivity extends AppCompatActivity {
         showCurrentDate();
 
         // 初始状态红方先走
-        updateTurnIndicator(1);
+        updateTurnIndicator(chessView.getCurrentSide());
     }
 
     /**
      * 显示当前日期（带加油语）
      */
     private void showCurrentDate() {
-        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy年MM月dd日", java.util.Locale.CHINA);
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy年MM月dd日", java.util.Locale.US);
         String currentDate = sdf.format(new java.util.Date());
-        tvAccuracy.setText("🔥刘霸天为您加油！🔥🔥" + currentDate + "🔥");
+        tvAccuracy.setText("🔥" + currentDate + "🔥");
     }
 
 
@@ -902,13 +1130,25 @@ public class MainActivity extends AppCompatActivity {
      */
     private void updateTitle() {
         if (currentTiku != null && currentFenList != null && currentQuestionIndex < currentFenList.size()) {
-            String title = "<big><font color=\"#000000\"><b>" + currentTiku.getName() + "</b></font></big><br/><small>第 " + (currentQuestionIndex + 1) + "/" + currentFenList.size() + " 题</small>";
-            tvTitle.setText(android.text.Html.fromHtml(title));
+            String questionTitle = currentTiku.getQuestionTitle(currentQuestionIndex);
+            String secondLine = "第 " + (currentQuestionIndex + 1) + "/" + currentFenList.size() + " 题";
+            if (questionTitle != null && !questionTitle.isEmpty()) {
+                secondLine += " " + questionTitle;
+            }
+            tvTitle.setText(currentTiku.getName());
+            if (tvTitleDetail != null) {
+                tvTitleDetail.setText(secondLine);
+            }
         } else if (currentTiku != null) {
-            String title = "<big><font color=\"#000000\"><b>" + currentTiku.getName() + "</b></font></big><br/><small>已完成</small>";
-            tvTitle.setText(android.text.Html.fromHtml(title));
+            tvTitle.setText(currentTiku.getName());
+            if (tvTitleDetail != null) {
+                tvTitleDetail.setText("已完成");
+            }
         } else {
             tvTitle.setText("请选择题库");
+            if (tvTitleDetail != null) {
+                tvTitleDetail.setText("");
+            }
         }
     }
 
@@ -933,7 +1173,8 @@ public class MainActivity extends AppCompatActivity {
         int percentage = (doneCount * 100) / total;
 
         // 显示进度和正确率
-        String accuracyText = "进度/正确率：" + doneCount + "/" + total + " (" + percentage + "%)";
+        String accuracyText = String.format(java.util.Locale.US, "进度/正确率：%03d/%03d (%d%%)",
+                doneCount, total, percentage);
         tvAccuracy.setText(accuracyText);
     }
 
@@ -1065,7 +1306,7 @@ public class MainActivity extends AppCompatActivity {
         int totalMinutes = totalElapsedSeconds / 60;
         int totalSecs = totalElapsedSeconds % 60;
 
-        String timeText = String.format("本题用时：%02d:%02d | 总用时：%02d:%02d",
+        String timeText = String.format(java.util.Locale.US, "本题用时：%02d:%02d | 总用时：%02d:%02d",
                 elapsedMinutes, elapsedSecs, totalMinutes, totalSecs);
         tvTime.setText(timeText);
     }
@@ -1078,7 +1319,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         if (currentTiku == null) {
-            Toast.makeText(this, "请选择题库", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "请选择题库", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1087,12 +1328,12 @@ public class MainActivity extends AppCompatActivity {
 
         currentFenList = currentTiku.getFenList();
         if (currentFenList == null || currentFenList.isEmpty()) {
-            Toast.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
             return;
         }
 
         if (currentQuestionIndex >= currentFenList.size()) {
-            Toast.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
+            ToastUtil.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -1106,13 +1347,16 @@ public class MainActivity extends AppCompatActivity {
      * @param skipCount 已连续跳过的题数（防死循环，上限10）
      */
     private void loadValidQuestion(int index, int skipCount) {
+        if (!isActivityAlive() || chessView == null || currentTiku == null) {
+            return;
+        }
         if (currentFenList == null || index >= currentFenList.size()) {
             // 已到题库末尾：不重置索引，直接重载当前最后一题，方便用户点"重来"恢复棋局
             if (currentTiku != null && currentFenList != null && !currentFenList.isEmpty()) {
-                Toast.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
+                ToastUtil.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
                 loadCurrentQuestion();
             } else {
-                Toast.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
+                ToastUtil.makeText(this, "🎉 已完成所有题目！", Toast.LENGTH_LONG).show();
             }
             return;
         }
@@ -1120,7 +1364,7 @@ public class MainActivity extends AppCompatActivity {
             index = 0;
         }
         if (skipCount > 10) {
-            Toast.makeText(this, "连续多题局面不合法，已停止", Toast.LENGTH_LONG).show();
+            ToastUtil.makeText(this, "连续多题局面不合法，已停止", Toast.LENGTH_LONG).show();
             return;
         }
 
@@ -1134,6 +1378,19 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        PositionValidator.Result fenFormatResult = positionValidator.validateFenFormat(fen);
+        if (!fenFormatResult.valid) {
+            Log.w("MainActivity", "FEN格式不合法[题" + (index + 1) + "]: " + fenFormatResult.reason + " FEN=" + fen);
+            ToastUtil.makeText(this,
+                    "第" + (index + 1) + "题FEN格式不合法：" + fenFormatResult.reason + "，即将跳到下一题",
+                    Toast.LENGTH_LONG).show();
+            currentQuestionIndex = index + 1;
+            final int nextIdx = currentQuestionIndex;
+            final int nextSkip = skipCount + 1;
+            uiHandler.postDelayed(() -> loadValidQuestion(nextIdx, nextSkip), 1200);
+            return;
+        }
+
         // 先把 FEN 载入棋盘以便校验
         String initialFEN = currentTiku.getInitialFEN(index);
         if (initialFEN != null && !initialFEN.isEmpty()) {
@@ -1141,20 +1398,27 @@ public class MainActivity extends AppCompatActivity {
         } else {
             chessView.setCurrentInitialFEN(fen);
         }
-        chessView.setBoardByFEN(fen, isFlipped);
+        if (!chessView.setBoardByFEN(fen, isFlipped)) {
+            Log.w("MainActivity", "FEN解析失败，跳过题目: " + fen);
+            currentQuestionIndex = index + 1;
+            final int nextIdx = currentQuestionIndex;
+            final int nextSkip = skipCount + 1;
+            uiHandler.postDelayed(() -> loadValidQuestion(nextIdx, nextSkip), 1200);
+            return;
+        }
 
         // ===== 局面合法性检查 =====
         PositionValidator.Result vr = positionValidator.validate(chessView.chessBoard);
         if (!vr.valid) {
             Log.w("MainActivity", "局面不合法[题" + (index + 1) + "]: " + vr.reason + " FEN=" + fen);
-            Toast.makeText(this,
+            ToastUtil.makeText(this,
                     "第" + (index + 1) + "题局面不合法：" + vr.reason + "，即将跳到下一题",
                     Toast.LENGTH_LONG).show();
             currentQuestionIndex = index + 1;
             // 延迟跳题，让 toast 有时间显示
             final int nextIdx = currentQuestionIndex;
             final int nextSkip = skipCount + 1;
-            new Handler().postDelayed(() -> loadValidQuestion(nextIdx, nextSkip), 1200);
+            uiHandler.postDelayed(() -> loadValidQuestion(nextIdx, nextSkip), 1200);
             return;
         }
         // ===========================
@@ -1162,12 +1426,13 @@ public class MainActivity extends AppCompatActivity {
         // 合法 → 正式加载
         currentQuestionIndex = index;
         currentTiku.goToIndex(index);
+        playPendingPageFlip();
         totalQuestions = currentFenList.size();
         updateTitle();
         updateAccuracy();
         elapsedSeconds = 0;
 
-        updateTurnIndicator(1);
+        updateTurnIndicator(chessView.getCurrentSide());
 
         // ===== 设置AI对手方 =====
         setupPikafishForQuestion();
@@ -1185,6 +1450,10 @@ public class MainActivity extends AppCompatActivity {
      * 显示题库选择对话框
      */
     private void showTikuSelectorDialog() {
+        showTikuSelectorDialog(false);
+    }
+
+    private void showTikuSelectorDialog(boolean forceReload) {
         try {
             // 使用外部存储根目录下的 canju12 文件夹
             File externalDir = Environment.getExternalStorageDirectory();
@@ -1206,9 +1475,13 @@ public class MainActivity extends AppCompatActivity {
 
             ListView listView = dialogView.findViewById(R.id.listViewTiku);
             TextView tvTotalInfo = dialogView.findViewById(R.id.tvTotalInfo);
+            if (listView == null || tvTotalInfo == null || tikuManager == null) {
+                Log.e("MainActivity", "题库选择器控件或管理器为空");
+                ToastUtil.makeText(this, "题库列表加载失败", Toast.LENGTH_SHORT).show();
+                return;
+            }
 
-            tikuManager.reloadTiku();
-            List<TikuData> tikuList = tikuManager.getTikuList();
+            List<TikuData> tikuList = new ArrayList<>(tikuManager.getTikuList());
 
             // 过滤已隐藏的题库
             android.content.SharedPreferences prefs = getSharedPreferences("chess_data", MODE_PRIVATE);
@@ -1217,8 +1490,9 @@ public class MainActivity extends AppCompatActivity {
                 String[] hiddenArr = hiddenStr.split("\\|");
                 java.util.Set<String> hiddenSet = new java.util.HashSet<>();
                 for (String h : hiddenArr) hiddenSet.add(h);
-                // "象棋杀着大全" 和 "错题本" 始终显示
+                // "象棋杀着大全"、"错题本" 和 "收藏夹" 始终显示
                 hiddenSet.remove("错题本");
+                hiddenSet.remove("收藏夹");
                 // 象棋杀着大全如果在隐藏列表中则不显示
                 tikuList.removeIf(t -> hiddenSet.contains(t.getName()));
             }
@@ -1233,12 +1507,14 @@ public class MainActivity extends AppCompatActivity {
                 showUnlockDialog();
             }
 
-            // 排序：错题本第一，象棋杀着大全第二，其余按字母升序
+            // 排序：错题本第一，收藏夹第二，象棋杀着大全第三，其余按字母升序
             java.util.Collections.sort(tikuList, (a, b) -> {
                 String na = a.getName();
                 String nb = b.getName();
                 if (na.equals("错题本")) return -1;
                 if (nb.equals("错题本")) return 1;
+                if (na.equals("收藏夹")) return -1;
+                if (nb.equals("收藏夹")) return 1;
                 if (na.equals("象棋杀着大全")) return -1;
                 if (nb.equals("象棋杀着大全")) return 1;
                 return na.compareTo(nb);
@@ -1252,7 +1528,18 @@ public class MainActivity extends AppCompatActivity {
             listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
                 @Override
                 public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
-                    TikuData selectedTiku = tikuList.get(position);
+                    try {
+                    Object selectedItem = parent.getItemAtPosition(position);
+                    if (!(selectedItem instanceof TikuData)) {
+                        Log.w("MainActivity", "题库点击对象已失效: " + position);
+                        return;
+                    }
+                    TikuData selectedTiku = (TikuData) selectedItem;
+                    if (selectedTiku.getTotalCount() <= 0) {
+                        ToastUtil.makeText(MainActivity.this,
+                                "该题库没有可加载的有效题目", Toast.LENGTH_LONG).show();
+                        return;
+                    }
 
                     // ===== 计算选关面板的高亮索引（在修改currentTiku之前判断） =====
                     int highlightIndex;
@@ -1283,26 +1570,40 @@ public class MainActivity extends AppCompatActivity {
                     // ================================================
 
                     // 显示选关页面
+                    if (tikuDialog != null && tikuDialog.isShowing()) {
+                        tikuDialog.dismiss();
+                    }
+                    tikuDialog = null;
                     showQuestionSelectorDialog(selectedTiku, highlightIndex);
+                    } catch (Throwable t) {
+                        Log.e("MainActivity", "打开题库失败", t);
+                        ToastUtil.makeText(MainActivity.this,
+                                "打开题库失败，请检查题库文件格式", Toast.LENGTH_LONG).show();
+                    }
                 }
             });
 
             listView.setOnItemLongClickListener((parent, view, position, id) -> {
-                TikuData tiku = tikuList.get(position);
+                Object selectedItem = parent.getItemAtPosition(position);
+                if (!(selectedItem instanceof TikuData)) {
+                    Log.w("MainActivity", "题库长按对象已失效: " + position);
+                    return true;
+                }
+                TikuData tiku = (TikuData) selectedItem;
                 String name = tiku.getName();
                 // 检查外置文件
                 File extFile = new File(new File(externalDir, "canju12/tiku"), tiku.getFileName());
 
-                // "错题本" 不可删除也不可隐藏
-                if (name.equals("错题本")) {
-                    Toast.makeText(MainActivity.this, "错题本不可删除", Toast.LENGTH_SHORT).show();
+                // "错题本" 和 "收藏夹" 不可删除也不可隐藏
+                if (name.equals("错题本") || name.equals("收藏夹")) {
+                    ToastUtil.makeText(MainActivity.this, name + "不可删除也不可隐藏", Toast.LENGTH_SHORT).show();
                     return true;
                 }
 
                 // "象棋杀着大全" 做完才可隐藏，否则 toast
                 if (name.equals("象棋杀着大全")) {
                     if (!ProgressManager.getInstance(MainActivity.this).isTikuFullyCompleted(name, tiku.getTotalCount())) {
-                        Toast.makeText(MainActivity.this, "不可隐藏不可删除", Toast.LENGTH_SHORT).show();
+                        ToastUtil.makeText(MainActivity.this, "不可隐藏不可删除", Toast.LENGTH_SHORT).show();
                         return true;
                     }
                     // 已完成 → 弹窗确认隐藏
@@ -1314,10 +1615,10 @@ public class MainActivity extends AppCompatActivity {
                                 String h2 = sp2.getString("hidden_tikus", "");
                                 h2 = h2.isEmpty() ? name : h2 + "|" + name;
                                 sp2.edit().putString("hidden_tikus", h2).apply();
-                                tikuManager.reloadTiku();
+                                refreshExternalTikuInBackground(null);
                                 if (tikuDialog != null && tikuDialog.isShowing()) tikuDialog.dismiss();
-                                showTikuSelectorDialog();
-                                Toast.makeText(MainActivity.this, "已隐藏", Toast.LENGTH_SHORT).show();
+                                showTikuSelectorDialog(false);
+                                ToastUtil.makeText(MainActivity.this, "已隐藏", Toast.LENGTH_SHORT).show();
                             })
                             .setNegativeButton("取消", null)
                             .show();
@@ -1331,10 +1632,10 @@ public class MainActivity extends AppCompatActivity {
                             .setMessage("确定删除外置题库「" + name + "」吗？")
                             .setPositiveButton("删除", (di, wi) -> {
                                 extFile.delete();
-                                tikuManager.reloadTiku();
+                                refreshExternalTikuInBackground(null);
                                 if (tikuDialog != null && tikuDialog.isShowing()) tikuDialog.dismiss();
-                                showTikuSelectorDialog();
-                                Toast.makeText(MainActivity.this, "已删除", Toast.LENGTH_SHORT).show();
+                                showTikuSelectorDialog(false);
+                                ToastUtil.makeText(MainActivity.this, "已删除", Toast.LENGTH_SHORT).show();
                             })
                             .setNegativeButton("取消", null)
                             .show();
@@ -1351,10 +1652,10 @@ public class MainActivity extends AppCompatActivity {
                                     hidden = hidden.isEmpty() ? name : hidden + "|" + name;
                                     sp.edit().putString("hidden_tikus", hidden).apply();
                                 }
-                                tikuManager.reloadTiku();
+                                refreshExternalTikuInBackground(null);
                                 if (tikuDialog != null && tikuDialog.isShowing()) tikuDialog.dismiss();
-                                showTikuSelectorDialog();
-                                Toast.makeText(MainActivity.this, "已隐藏", Toast.LENGTH_SHORT).show();
+                                showTikuSelectorDialog(false);
+                                ToastUtil.makeText(MainActivity.this, "已隐藏", Toast.LENGTH_SHORT).show();
                             })
                             .setNegativeButton("取消", null)
                             .show();
@@ -1367,9 +1668,9 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onClick(DialogInterface dialog, int which) {
                     getSharedPreferences("chess_data", MODE_PRIVATE).edit().remove("hidden_tikus").apply();
-                    tikuManager.reloadTiku();
-                    Toast.makeText(MainActivity.this, "已刷新", Toast.LENGTH_SHORT).show();
-                    showTikuSelectorDialog();
+                    refreshExternalTikuInBackground(null);
+                    ToastUtil.makeText(MainActivity.this, "已刷新", Toast.LENGTH_SHORT).show();
+                    showTikuSelectorDialog(false);
                 }
             });
 
@@ -1384,23 +1685,94 @@ public class MainActivity extends AppCompatActivity {
             tikuDialog = builder.create();
             tikuDialog.show();
 
+            final AlertDialog shownDialog = tikuDialog;
+            final TikuSelectorAdapter shownAdapter = adapter;
+            refreshExternalTikuInBackground(() -> {
+                if (isFinishing() || shownDialog != tikuDialog || !shownDialog.isShowing()) {
+                    return;
+                }
+                List<TikuData> refreshedList = getVisibleTikuList();
+                shownAdapter.setTikuList(refreshedList);
+                tvTotalInfo.setText("共 " + refreshedList.size() + " 个题库");
+            });
+
         } catch (Exception e) {
             Log.e("MainActivity", "显示题库选择失败: " + e.getMessage());
-            Toast.makeText(this, "加载题库失败", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "加载题库失败", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private List<TikuData> getVisibleTikuList() {
+        List<TikuData> result = new ArrayList<>(tikuManager.getTikuList());
+
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("chess_data", MODE_PRIVATE);
+        String hiddenStr = prefs.getString("hidden_tikus", "");
+        if (!hiddenStr.isEmpty()) {
+            java.util.Set<String> hiddenSet = new java.util.HashSet<>();
+            for (String hidden : hiddenStr.split("\\|")) {
+                hiddenSet.add(hidden);
+            }
+            hiddenSet.remove("错题本");
+            hiddenSet.remove("收藏夹");
+            result.removeIf(t -> hiddenSet.contains(t.getName()));
+        }
+
+        ProgressManager pm = ProgressManager.getInstance(this);
+        if (!pm.isUnlocked()) {
+            result.removeIf(TikuData::isFromYincang);
+        } else if (!pm.isUnlockNotified()) {
+            pm.setUnlockNotified(true);
+            showUnlockDialog();
+        }
+
+        Collections.sort(result, (a, b) -> {
+            String nameA = a.getName();
+            String nameB = b.getName();
+            if (nameA.equals("错题本")) return -1;
+            if (nameB.equals("错题本")) return 1;
+            if (nameA.equals("收藏夹")) return -1;
+            if (nameB.equals("收藏夹")) return 1;
+            if (nameA.equals("象棋杀着大全")) return -1;
+            if (nameB.equals("象棋杀着大全")) return 1;
+            return nameA.compareTo(nameB);
+        });
+        return result;
+    }
+
+    private void refreshExternalTikuInBackground(Runnable onComplete) {
+        ioExecutor.execute(() -> {
+            tikuManager.refreshExternalTiku();
+            if (onComplete != null) {
+                uiHandler.post(onComplete);
+            }
+        });
     }
     /**
      * 加载选中的题目
      */
 
     private void loadSelectedQuestion(int position, TikuData tiku) {
+        try {
+        if (!isActivityAlive() || chessView == null || tiku == null
+                || position < 0 || position >= tiku.getTotalCount()) {
+            Log.w("MainActivity", "选题参数无效: position=" + position);
+            ToastUtil.makeText(this, "题目不存在或已失效", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         String fen = tiku.getFENByIndex(position);
-        if (fen != null) {
+        if (fen != null && !fen.isEmpty()) {
             boolean isFlipped = tiku.getFlipped(position);
 
-            currentQuestionIndex = position;
-            tiku.goToIndex(position);
-            currentFenList = tiku.getFenList();
+            PositionValidator.Result fenFormatResult = positionValidator.validateFenFormat(fen);
+            if (!fenFormatResult.valid) {
+                ToastUtil.makeText(MainActivity.this,
+                        "第 " + (position + 1) + " 题FEN格式不合法：" + fenFormatResult.reason,
+                        Toast.LENGTH_LONG).show();
+                Log.w("MainActivity", "手动选题FEN格式不合法[题" + (position + 1) + "]: " + fenFormatResult.reason + " FEN=" + fen);
+                return;
+            }
 
             String initialFEN = tiku.getInitialFEN(position);
             if (initialFEN != null && !initialFEN.isEmpty()) {
@@ -1409,13 +1781,31 @@ public class MainActivity extends AppCompatActivity {
                 chessView.setCurrentInitialFEN(fen);
             }
 
-            chessView.setBoardByFEN(fen, isFlipped);
+            if (!chessView.setBoardByFEN(fen, isFlipped)) {
+                ToastUtil.makeText(MainActivity.this,
+                        "加载题目失败：FEN解析失败", Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            PositionValidator.Result vr = positionValidator.validate(chessView.chessBoard);
+            if (!vr.valid) {
+                ToastUtil.makeText(MainActivity.this,
+                        "第 " + (position + 1) + " 题局面不合法：" + vr.reason,
+                        Toast.LENGTH_LONG).show();
+                Log.w("MainActivity", "手动选题局面不合法[题" + (position + 1) + "]: " + vr.reason + " FEN=" + fen);
+                return;
+            }
+
+            currentQuestionIndex = position;
+            tiku.goToIndex(position);
+            currentFenList = tiku.getFenList();
+
             updateTitle();
             updateAccuracy();
             elapsedSeconds = 0;
 
             // ===== 更新行棋指示器（红方先走） =====
-            updateTurnIndicator(1);
+            updateTurnIndicator(chessView.getCurrentSide());
             // =====================================
             // ===== 设置AI对手方（含2#检测+皮卡鱼先行） =====
             setupPikafishForQuestion();
@@ -1424,8 +1814,14 @@ public class MainActivity extends AppCompatActivity {
             saveCurrentQuestionToPreferences();
             // ========================
 
-            Toast.makeText(MainActivity.this,
+            ToastUtil.makeText(MainActivity.this,
                     "加载第 " + (position + 1) + " 题", Toast.LENGTH_SHORT).show();
+        } else {
+            ToastUtil.makeText(this, "该题目的 FEN 为空", Toast.LENGTH_LONG).show();
+        }
+        } catch (Throwable t) {
+            Log.e("MainActivity", "加载选中题目失败", t);
+            ToastUtil.makeText(this, "加载题目失败，请检查 FEN 内容", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -1434,19 +1830,214 @@ public class MainActivity extends AppCompatActivity {
      * 切换到下一题（手动管理索引）
      */
     private void nextQuestion() {
+        if (pageFlipRunning) {
+            return;
+        }
         if (currentTiku == null) {
-            Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
             return;
         }
 
         currentFenList = currentTiku.getFenList();
         if (currentFenList == null || currentFenList.isEmpty()) {
-            Toast.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "题库为空", Toast.LENGTH_SHORT).show();
             return;
+        }
+
+        if (currentQuestionIndex + 1 < currentFenList.size()) {
+            preparePageFlip(1);
         }
 
         // 跳到下一题，并通过 loadValidQuestion 自动跳过不合法局面
         loadValidQuestion(currentQuestionIndex + 1, 0);
+    }
+
+    /**
+     * 准备一次伪翻书动画。
+     * direction=1 表示下一题：右上角向左翻；direction=-1 表示上一题：右下角向右翻。
+     */
+    private void preparePageFlip(int direction) {
+        if (pageFlipRunning) return;
+
+        Bitmap snapshot = capturePageSnapshot();
+        if (pendingPageFlipSnapshot != null && !pendingPageFlipSnapshot.isRecycled()) {
+            pendingPageFlipSnapshot.recycle();
+        }
+        pendingPageFlipSnapshot = snapshot;
+        pendingPageFlipDirection = direction;
+    }
+
+    private Bitmap capturePageSnapshot() {
+        View boardOnly = findViewById(R.id.boardFrame);
+        if (boardOnly != null && boardOnly.getWidth() > 0 && boardOnly.getHeight() > 0) {
+            return captureViewSnapshot(boardOnly);
+        }
+
+        if (getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE) {
+            View boardFrame = findViewById(R.id.boardFrame);
+            return captureViewSnapshot(boardFrame);
+        }
+
+        View host = findViewById(R.id.mainLayout);
+        View titleDetail = findViewById(R.id.tv_title_detail);
+        View boardFrame = findViewById(R.id.boardFrame);
+        if (host == null || titleDetail == null || boardFrame == null
+                || host.getWidth() <= 0 || host.getHeight() <= 0) {
+            return null;
+        }
+        Rect region = getPageFlipRegion(host);
+        if (region == null || region.width() <= 0 || region.height() <= 0) {
+            return null;
+        }
+
+        try {
+            Bitmap bitmap = Bitmap.createBitmap(
+                    region.width(), region.height(), Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            drawViewAtRegionPosition(canvas, titleDetail, region, host);
+            drawViewAtRegionPosition(canvas, boardFrame, region, host);
+            return bitmap;
+        } catch (Throwable t) {
+            Log.w("MainActivity", "缈婚〉鎴浘澶辫触: " + t.getMessage());
+            return null;
+        }
+    }
+
+    private Bitmap captureViewSnapshot(View page) {
+        if (page == null || page.getWidth() <= 0 || page.getHeight() <= 0) {
+            return null;
+        }
+
+        try {
+            Bitmap bitmap = Bitmap.createBitmap(
+                    page.getWidth(), page.getHeight(), Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            page.draw(canvas);
+            return bitmap;
+        } catch (Throwable t) {
+            Log.w("MainActivity", "翻页截图失败: " + t.getMessage());
+            return null;
+        }
+    }
+
+    private void playPendingPageFlip() {
+        if (pageFlipRunning || pendingPageFlipDirection == 0) return;
+
+        final Bitmap snapshot = pendingPageFlipSnapshot;
+        final int direction = pendingPageFlipDirection;
+        pendingPageFlipSnapshot = null;
+        pendingPageFlipDirection = 0;
+
+        if (snapshot == null || snapshot.isRecycled()) {
+            return;
+        }
+
+        View boardFrame = findViewById(R.id.boardFrame);
+        if (!(boardFrame instanceof ViewGroup)) {
+            snapshot.recycle();
+            return;
+        }
+
+        final ViewGroup container = (ViewGroup) boardFrame;
+
+        final SoftPageFlipView overlay = new SoftPageFlipView(this, snapshot, direction);
+        overlay.setClickable(true);
+
+        ViewGroup.LayoutParams params = new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT);
+        container.addView(overlay, params);
+
+        pageFlipContainer = container;
+        pageFlipOverlay = overlay;
+        pageFlipDirection = direction;
+        pageFlipRunning = true;
+
+        overlay.post(() -> {
+            overlay.animate()
+                    .setUpdateListener(animation ->
+                            overlay.setProgress(animation.getAnimatedFraction()))
+                    .setDuration(460)
+                    .setInterpolator(new AccelerateDecelerateInterpolator())
+                    .setListener(new AnimatorListenerAdapter() {
+                        @Override
+                        public void onAnimationEnd(Animator animation) {
+                            finishPageFlip(snapshot, overlay, container);
+                        }
+
+                        @Override
+                        public void onAnimationCancel(Animator animation) {
+                            finishPageFlip(snapshot, overlay, container);
+                        }
+                    })
+                    .start();
+        });
+    }
+
+    private View getPageFlipHost() {
+        if (getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE) {
+            return findViewById(R.id.boardFrame);
+        }
+        return findViewById(R.id.mainLayout);
+    }
+
+    private Rect getPageFlipRegion(View host) {
+        if (host == null) return null;
+
+        if (getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE) {
+            return new Rect(0, 0, host.getWidth(), host.getHeight());
+        }
+
+        View titleDetail = findViewById(R.id.tv_title_detail);
+        View boardFrame = findViewById(R.id.boardFrame);
+        if (titleDetail == null || boardFrame == null) return null;
+
+        int[] hostLocation = new int[2];
+        int[] titleLocation = new int[2];
+        int[] boardLocation = new int[2];
+        host.getLocationInWindow(hostLocation);
+        titleDetail.getLocationInWindow(titleLocation);
+        boardFrame.getLocationInWindow(boardLocation);
+
+        int left = Math.min(titleLocation[0], boardLocation[0]) - hostLocation[0];
+        int top = titleLocation[1] - hostLocation[1];
+        int right = Math.max(
+                titleLocation[0] + titleDetail.getWidth(),
+                boardLocation[0] + boardFrame.getWidth()) - hostLocation[0];
+        int bottom = boardLocation[1] + boardFrame.getHeight() - hostLocation[1];
+        return new Rect(left, top, right, bottom);
+    }
+
+    private void drawViewAtRegionPosition(
+            Canvas canvas, View view, Rect region, View host) {
+        int[] hostLocation = new int[2];
+        int[] viewLocation = new int[2];
+        host.getLocationInWindow(hostLocation);
+        view.getLocationInWindow(viewLocation);
+        canvas.save();
+        canvas.translate(
+                viewLocation[0] - hostLocation[0] - region.left,
+                viewLocation[1] - hostLocation[1] - region.top);
+        view.draw(canvas);
+        canvas.restore();
+    }
+
+    private void finishPageFlip(Bitmap snapshot, SoftPageFlipView overlay,
+                                ViewGroup container) {
+        if (overlay.getParent() == container) {
+            container.removeView(overlay);
+        }
+        overlay.releaseBitmap();
+        if (snapshot != null && !snapshot.isRecycled()) {
+            snapshot.recycle();
+        }
+        pageFlipOverlay = null;
+        pageFlipContainer = null;
+        pageFlipDirection = 0;
+        pageFlipRunning = false;
     }
 
 
@@ -1459,7 +2050,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private void showLevelDialog() {
         if (currentTiku == null) {
-            Toast.makeText(this, "请先选择题库", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "请先选择题库", Toast.LENGTH_SHORT).show();
             showTikuSelectorDialog();
             return;
         }
@@ -1542,7 +2133,6 @@ public class MainActivity extends AppCompatActivity {
             final AlertDialog dialog = builder.create();
             // ========================
 
-            final Handler handler = new Handler();
             final int[] clickCount = {0};
             final int[] selectedPosition = {0};
 
@@ -1554,8 +2144,8 @@ public class MainActivity extends AppCompatActivity {
 
                     clickCount[0]++;
 
-                    handler.removeCallbacksAndMessages(null);
-                    handler.postDelayed(new Runnable() {
+                    questionSelectorHandler.removeCallbacksAndMessages(null);
+                    questionSelectorHandler.postDelayed(new Runnable() {
                         @Override
                         public void run() {
                             if (clickCount[0] == 1) {
@@ -1617,7 +2207,7 @@ public class MainActivity extends AppCompatActivity {
                             currentQuestionIndex = 0;
                             updateAccuracy();
                             loadCurrentQuestion();
-                            Toast.makeText(MainActivity.this, "进度已重置", Toast.LENGTH_SHORT).show();
+                            ToastUtil.makeText(MainActivity.this, "进度已重置", Toast.LENGTH_SHORT).show();
                         }
 
                         dialog.dismiss();
@@ -1637,7 +2227,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void copyFEN() {
         if (chessView == null) {
-            Toast.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1649,13 +2239,13 @@ public class MainActivity extends AppCompatActivity {
                 getSystemService(CLIPBOARD_SERVICE);
         android.content.ClipData clip = android.content.ClipData.newPlainText("FEN", fen);
         clipboard.setPrimaryClip(clip);
-        Toast.makeText(this, "FEN已复制到剪贴板", Toast.LENGTH_SHORT).show();
+        ToastUtil.makeText(this, "FEN已复制到剪贴板", Toast.LENGTH_SHORT).show();
         Log.d("MainActivity", "FEN: " + fen);
     }
 
     private void restartCurrentQuestion() {
         if (chessView == null) {
-            Toast.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1670,14 +2260,14 @@ public class MainActivity extends AppCompatActivity {
 
         chessView.resetToCurrentInitial();
         elapsedSeconds = 0;
-        Toast.makeText(this, "已回到当前题目的初始局面", Toast.LENGTH_SHORT).show();
+        ToastUtil.makeText(this, "已回到当前题目的初始局面", Toast.LENGTH_SHORT).show();
     }
     /**
      * 拆解分析功能 - 跳转到分析界面
      */
     private void analyzePosition() {
         if (chessView == null) {
-            Toast.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
             return;
         }
 
@@ -1703,18 +2293,21 @@ public class MainActivity extends AppCompatActivity {
      */
     private void regretMove() {
         if (chessView == null) {
-            Toast.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
             return;
         }
         boolean success = chessView.undoMove();
         if (success) {
-            // 悔棋后清除所有选中高亮，避免残留
-            chessView.clearSelection();
-            Toast.makeText(this, "悔棋成功", Toast.LENGTH_SHORT).show();
+            // 对弈中的悔棋回退一整回合：AI一步 + 棋手一步。
+            boolean secondSuccess = chessView.undoMove();
+            if (!secondSuccess) {
+                chessView.restoreLastMoveHighlight();
+            }
+            ToastUtil.makeText(this, "悔棋成功", Toast.LENGTH_SHORT).show();
             String fen = chessView.getFEN();
             Log.d("MainActivity", "悔棋后FEN: " + fen);
         } else {
-            Toast.makeText(this, "已回到最初局面", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "已回到最初局面", Toast.LENGTH_SHORT).show();
         }
     }
     /**
@@ -1734,10 +2327,10 @@ public class MainActivity extends AppCompatActivity {
             addToWrongBook(rawFen);
             // ===================================
 
-            Toast.makeText(this, "标记为：不会 - 已记录到错题本", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "不会 - 已记录到错题本！", Toast.LENGTH_SHORT).show();
             nextQuestion();
         } else {
-            Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
         }
     }
     /**
@@ -1775,6 +2368,70 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void finishAiQuestion(int winner, String reason) {
+        if (questionFinished) return;
+
+        questionFinished = true;
+        String prefix = (reason == null || reason.isEmpty()) ? "" : reason + "，";
+        if (winner == humanSide) {
+            if (!questionRecorded) {
+                winCount++;
+                questionRecorded = true;
+            }
+            updateAccuracy();
+            markQuestionCompleted();
+            ToastUtil.makeText(this, prefix + "你赢了！进入下一题", Toast.LENGTH_SHORT).show();
+            uiHandler.postDelayed(() -> nextQuestion(), 800);
+        } else {
+            if (!questionRecorded) {
+                notMasteredCount++;
+                questionRecorded = true;
+            }
+            updateAccuracy();
+            addToWrongBookIfNotExists();
+            showRetryDialog(prefix + "你输了！是否重来？");
+        }
+    }
+
+    /**
+     * 将当前题目保存到收藏夹，不改变答题统计和题目索引。
+     */
+    private void addCurrentQuestionToFavoriteBook() {
+        try {
+            if (chessView == null) {
+                ToastUtil.makeText(this, "棋盘未初始化", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            String rawFen = null;
+            if (currentTiku != null) {
+                rawFen = currentTiku.getRawFEN(currentQuestionIndex);
+            }
+            if (rawFen == null || rawFen.trim().isEmpty()) {
+                rawFen = chessView.getFEN();
+            }
+            if (rawFen == null || rawFen.trim().isEmpty()) {
+                ToastUtil.makeText(this, "获取当前局面失败", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            WrongBookManager favoriteManager =
+                    new WrongBookManager("收藏夹", "收藏夹.txt");
+            favoriteManager.load();
+            int oldCount = favoriteManager.getCount();
+            favoriteManager.add(rawFen.trim());
+
+            if (favoriteManager.getCount() == oldCount) {
+                ToastUtil.makeText(this, "收藏夹中已存在", Toast.LENGTH_SHORT).show();
+            } else {
+                ToastUtil.makeText(this, "已加入收藏夹", Toast.LENGTH_SHORT).show();
+        }
+    } catch (Throwable t) {
+            Log.e("MainActivity", "保存收藏夹失败", t);
+            ToastUtil.makeText(this, "收藏夹保存失败，请检查存储权限", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     /**
      * 标记为已会
      */
@@ -1785,10 +2442,10 @@ public class MainActivity extends AppCompatActivity {
             markQuestionCompleted();
             // ===========================
             updateAccuracy();
-            Toast.makeText(this, "标记为：已会", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "标记为：已会", Toast.LENGTH_SHORT).show();
             nextQuestion();
         } else {
-            Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
+            ToastUtil.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -1892,19 +2549,38 @@ public class MainActivity extends AppCompatActivity {
             }
 
             // 恢复题目
-            currentTiku = restoredTiku;
-            currentFenList = restoredTiku.getFenList();
-            currentQuestionIndex = savedIndex;
-            totalQuestions = restoredTiku.getTotalCount();
-            tikuManager.setCurrentTiku(restoredTiku);
-
             // ===== 加载题目（翻转状态从 TikuData 获取） =====
             boolean isFlipped = restoredTiku.getFlipped(savedIndex);
 
             // 加载题目
-            String fen = currentFenList.get(currentQuestionIndex);
+            String fen = restoredTiku.getFENByIndex(savedIndex);
             if (fen != null) {
-                chessView.setBoardByFEN(fen, isFlipped);
+                PositionValidator.Result fenFormatResult = positionValidator.validateFenFormat(fen);
+                if (!fenFormatResult.valid) {
+                    Log.w("MainActivity", "恢复题目FEN格式不合法: " + fenFormatResult.reason + " FEN=" + fen);
+                    clearSavedData();
+                    return false;
+                }
+
+                if (!chessView.setBoardByFEN(fen, isFlipped)) {
+                    Log.w("MainActivity", "恢复题目时 FEN 解析失败: " + fen);
+                    clearSavedData();
+                    return false;
+                }
+
+                PositionValidator.Result vr = positionValidator.validate(chessView.chessBoard);
+                if (!vr.valid) {
+                    Log.w("MainActivity", "恢复题目局面不合法: " + vr.reason + " FEN=" + fen);
+                    clearSavedData();
+                    return false;
+                }
+
+                currentTiku = restoredTiku;
+                currentFenList = restoredTiku.getFenList();
+                currentQuestionIndex = savedIndex;
+                totalQuestions = restoredTiku.getTotalCount();
+                tikuManager.setCurrentTiku(restoredTiku);
+
                 // ===== 设置AI对手方 =====
                 setupPikafishForQuestion();
                 // =========================
@@ -1915,7 +2591,7 @@ public class MainActivity extends AppCompatActivity {
             elapsedSeconds = 0;
 
             // 更新行棋指示器
-            updateTurnIndicator(1);
+            updateTurnIndicator(chessView.getCurrentSide());
 
             Log.d("MainActivity", "恢复题目成功: " + tikuName + ", 第" + (savedIndex + 1) + "题");
             return true;
@@ -1948,6 +2624,11 @@ public class MainActivity extends AppCompatActivity {
      */
     private void setupPikafishForQuestion() {
         if (!pikafishMode) return;
+
+        aiQuestionGeneration++;
+        if (pikafishWatchdog != null) {
+            pikafishHandler.removeCallbacks(pikafishWatchdog);
+        }
 
         boolean flipped = chessView.isBoardFlipped();
         humanSide = flipped ? -1 : 1;   // 人类走下方棋子
@@ -1984,7 +2665,13 @@ public class MainActivity extends AppCompatActivity {
      * 引擎会在首次使用时自动启动（懒加载）
      */
     private void triggerPikafish() {
-        if (isPikafishThinking) return;
+        if (isPikafishThinking || questionFinished
+                || chessView == null
+                || chessView.getCurrentSide() != pikafishSide) {
+            return;
+        }
+
+        final int searchGeneration = aiQuestionGeneration;
 
         // 如果引擎还没启动，先异步启动
         if (pikafishEngine == null) {
@@ -2003,18 +2690,30 @@ public class MainActivity extends AppCompatActivity {
 
                     // 引擎就绪后，重置 isPikafishThinking 再走棋
                     runOnUiThread(() -> {
+                        if (!isActivityAlive() || chessView == null
+                                || searchGeneration != aiQuestionGeneration
+                                || chessView.getCurrentSide() != pikafishSide
+                                || questionFinished) {
+                            isPikafishThinking = false;
+                            if (chessView != null) chessView.setTouchEnabled(true);
+                            return;
+                        }
                         isPikafishThinking = false;
                         doPikafishSearch();
                     });
                 } catch (Exception e) {
                     Log.e("MainActivity", "Pikafish 引擎启动失败", e);
                     runOnUiThread(() -> {
+                        if (!isActivityAlive()) return;
                         isPikafishThinking = false;
-                        chessView.setTouchEnabled(true);
+                        if (chessView != null) chessView.setTouchEnabled(true);
                         updateAccuracy();
                         String msg = e.getMessage();
+                        if (msg == null || msg.isEmpty()) {
+                            msg = e.getClass().getSimpleName();
+                        }
                         String displayMsg = msg.length() > 300 ? msg.substring(0, 300) : msg;
-                        Toast.makeText(MainActivity.this,
+                        ToastUtil.makeText(MainActivity.this,
                                 "AI启动失败:\n" + displayMsg,
                                 Toast.LENGTH_LONG).show();
                         Log.e("MainActivity", "Pikafish 引擎启动失败，完整错误:", e);
@@ -2061,12 +2760,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void doPikafishSearch() {
-        if (isPikafishThinking || pikafishEngine == null || !pikafishEngine.isReady()) {
+        if (isPikafishThinking || pikafishEngine == null || !pikafishEngine.isReady()
+                || questionFinished || chessView == null
+                || chessView.getCurrentSide() != pikafishSide) {
             return;
         }
 
         isPikafishThinking = true;
         chessView.setTouchEnabled(false);
+        final int searchGeneration = aiQuestionGeneration;
 
         // ===== 构建完整局面信息 =====
         String baseFen = chessView.getCurrentInitialFEN() != null
@@ -2089,14 +2791,18 @@ public class MainActivity extends AppCompatActivity {
 
         final long searchStart = System.currentTimeMillis();
 
-        pikafishEngine.getBestMoveAsync(finalFen, 18, 500, new PikafishEngine.PikafishCallback() {
+        pikafishEngine.getBestMoveAsync(finalFen, 22, 1500, new PikafishEngine.PikafishCallback() {
             @Override
             public void onBestMove(String move) {
-                isPikafishThinking = false;
-                chessView.setTouchEnabled(true);
-                updateAccuracy();
+                if (!isActivityAlive() || chessView == null
+                        || searchGeneration != aiQuestionGeneration) {
+                    Log.d("MainActivity", "忽略旧题目的引擎回调: " + move);
+                    return;
+                }
 
                 if (move == null || move.equals("(none)")) {
+                    isPikafishThinking = false;
+                    chessView.setTouchEnabled(true);
                     Log.d("MainActivity", "Pikafish 没有可走的棋");
                     return;
                 }
@@ -2105,11 +2811,25 @@ public class MainActivity extends AppCompatActivity {
 
                 // 计算耗时，确保总时间约1秒后走棋
                 long elapsed = System.currentTimeMillis() - searchStart;
-                final long delay = Math.max(200, 1000 - elapsed);
+                final long delay = Math.max(200, 1500 - elapsed);
                 pikafishHandler.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        boolean success = chessView.executeUCIMove(move);
+                        if (!isActivityAlive() || chessView == null
+                                || searchGeneration != aiQuestionGeneration
+                                || questionFinished
+                                || chessView.getCurrentSide() != pikafishSide) {
+                            isPikafishThinking = false;
+                            if (chessView != null) chessView.setTouchEnabled(true);
+                            Log.d("MainActivity", "忽略旧题目或非AI回合的引擎走法: " + move);
+                            return;
+                        }
+
+                        // 触摸保持禁用到 AI 落子完成，避免人在延迟期间抢先走棋。
+                        isPikafishThinking = false;
+                        boolean success = chessView.executeUCIMove(move, pikafishSide);
+                        chessView.setTouchEnabled(true);
+                        updateAccuracy();
                         if (success) {
                             // recordMove 已在 onMove 回调中执行，这里只需检查是否和棋
                             ChineseRules.DrawResult result = chineseRules.checkDraw(chessView.chessBoard);
@@ -2125,10 +2845,11 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onError(String error) {
+                if (!isActivityAlive()) return;
                 isPikafishThinking = false;
-                chessView.setTouchEnabled(true);
+                if (chessView != null) chessView.setTouchEnabled(true);
                 updateAccuracy();
-                Toast.makeText(MainActivity.this,
+                ToastUtil.makeText(MainActivity.this,
                         "皮卡鱼报错：" + error, Toast.LENGTH_LONG).show();
                 Log.e("MainActivity", "Pikafish 错误: " + error);
             }
@@ -2140,13 +2861,15 @@ public class MainActivity extends AppCompatActivity {
      * 显示 Toast "双方可和棋"，执行「已会」功能（标记完成→下一题）
      */
     private void drawDetected() {
+        if (!isActivityAlive() || chessView == null) return;
         if (isDrawHandling) return;  // 防重复
         isDrawHandling = true;
 
         isPikafishThinking = false;
         chessView.setTouchEnabled(true);
 
-        new Handler().postDelayed(() -> {
+        uiHandler.postDelayed(() -> {
+            if (!isActivityAlive()) return;
             if (currentTiku != null) {
                 if (humanSide == 1) {
                     // 人类执红 → 和棋算没过关 → 加入错题本，显示重试对话框
@@ -2165,7 +2888,7 @@ public class MainActivity extends AppCompatActivity {
                     questionFinished = true;
                     markQuestionCompleted();
                     updateAccuracy();
-                    Toast.makeText(MainActivity.this,
+                    ToastUtil.makeText(MainActivity.this,
                             "双方可和棋（你执黑，算过关）", Toast.LENGTH_SHORT).show();
                     nextQuestion();
                 }
@@ -2189,14 +2912,14 @@ public class MainActivity extends AppCompatActivity {
         // 只检查错题本最后一行是否相同（防止连续重复）
         String lastLine = readLastLineOfWrongBook();
         if (rawFen.equals(lastLine)) {
-            Log.d("MainActivity", "错题本最后一行已相同，跳过");
-            Toast.makeText(MainActivity.this, "错题本中已存在", Toast.LENGTH_SHORT).show();
+            Log.d("MainActivity", "错题本最后一行已相同，跳过！");
+            ToastUtil.makeText(MainActivity.this, "错题本中已存在！", Toast.LENGTH_SHORT).show();
             return;
         }
 
         addToWrongBook(rawFen);
         Log.d("MainActivity", "已加入错题本: " + rawFen);
-        Toast.makeText(MainActivity.this, "已记录到错题本", Toast.LENGTH_SHORT).show();
+        ToastUtil.makeText(MainActivity.this, "已记录到错题本！", Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -2231,6 +2954,7 @@ public class MainActivity extends AppCompatActivity {
      * 选「No」→ 停留在当前局面
      */
     private void showRetryDialog(String message) {
+        if (!isActivityAlive() || chessView == null) return;
         isPikafishThinking = false;
         chessView.setTouchEnabled(true);
 
@@ -2252,7 +2976,7 @@ public class MainActivity extends AppCompatActivity {
     /** 显示隐藏题库解锁弹窗 */
     private void showUnlockDialog() {
         TextView msg = new TextView(this);
-        msg.setText("🔥🔥刘霸天为您加油！🔥🔥🔥\n☁️☁️云库为您加油！☁️☁️\n🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋");
+        msg.setText("🔥🔥一二残局🔥🔥🔥\n☁️☁️云库为您加油！☁️☁️\n🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋");
         msg.setTextSize(16);
         msg.setGravity(android.view.Gravity.CENTER);
         msg.setPadding(40, 20, 40, 20);
@@ -2268,9 +2992,29 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        activityDestroyed = true;
         super.onDestroy();
         handler.removeCallbacksAndMessages(null);
+        uiHandler.removeCallbacksAndMessages(null);
+        questionSelectorHandler.removeCallbacksAndMessages(null);
         pikafishHandler.removeCallbacksAndMessages(null);
+
+        if (pendingPageFlipSnapshot != null && !pendingPageFlipSnapshot.isRecycled()) {
+            pendingPageFlipSnapshot.recycle();
+        }
+        pendingPageFlipSnapshot = null;
+        if (pageFlipOverlay != null && pageFlipOverlay.getParent() instanceof ViewGroup) {
+            ((ViewGroup) pageFlipOverlay.getParent()).removeView(pageFlipOverlay);
+        }
+        if (pageFlipOverlay instanceof SoftPageFlipView) {
+            ((SoftPageFlipView) pageFlipOverlay).animate().cancel();
+            ((SoftPageFlipView) pageFlipOverlay).disposeBitmap();
+        }
+        pageFlipOverlay = null;
+        pageFlipContainer = null;
+        pageFlipDirection = 0;
+        pendingPageFlipDirection = 0;
+        pageFlipRunning = false;
 
         // ===== 关闭 Pikafish 引擎 =====
         if (pikafishEngine != null) {
@@ -2283,6 +3027,7 @@ public class MainActivity extends AppCompatActivity {
         if (totalTimerHandler != null && totalTimerRunnable != null) {
             totalTimerHandler.removeCallbacks(totalTimerRunnable);
         }
+        ioExecutor.shutdownNow();
 
         // ===== 退出时保存当前题目 =====
         saveCurrentQuestionToPreferences();
@@ -2308,20 +3053,8 @@ public class MainActivity extends AppCompatActivity {
      */
     private void showFirstRunDialog() {
         try {
-            AlertDialog.Builder builder = new AlertDialog.Builder(this, R.style.Theme_YourApp_Fullscreen);
-
-            View dialogView = getLayoutInflater().inflate(R.layout.dialog_first_run, null);
-            builder.setView(dialogView);
-
-            // 设置按钮（使用自定义按钮样式）
-            builder.setPositiveButton("开始练习 🚀", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    dialog.dismiss();
-                }
-            });
-
-            AlertDialog dialog = builder.create();
+            AlertDialog dialog = showHtmlAssetDialog(
+                    "dialog_first_run.html", "开始练习 🚀", false);
 
             // 首次运行说明关闭后，检查隐藏题库解锁
             dialog.setOnDismissListener(d -> {
@@ -2332,25 +3065,80 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
 
-            dialog.show();
-
-            // ===== 修改这里：确保高度是 WRAP_CONTENT =====
-            android.view.WindowManager.LayoutParams params = dialog.getWindow().getAttributes();
-            params.width = (int) (getResources().getDisplayMetrics().widthPixels * 0.90);
-            params.height = android.view.ViewGroup.LayoutParams.WRAP_CONTENT;  // 关键：高度自适应
-            dialog.getWindow().setAttributes(params);
-            // =============================================
-
-            // 设置按钮文字颜色（通过获取按钮来设置）
-            Button positiveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            if (positiveButton != null) {
-                positiveButton.setTextColor(getResources().getColor(android.R.color.holo_green_dark));
-                positiveButton.setTextSize(18);
-            }
-
         } catch (Exception e) {
             Log.e("MainActivity", "显示说明书失败: " + e.getMessage());
         }
+    }
+
+    private AlertDialog showHtmlAssetDialog(String assetName, String positiveText) {
+        return showHtmlAssetDialog(assetName, positiveText, false);
+    }
+
+    private AlertDialog showHtmlAssetDialog(
+            String assetName, String positiveText, boolean fullScreen) {
+        WebView webView = new WebView(this);
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(false);
+        settings.setDomStorageEnabled(false);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(false);
+        webView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        webView.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+
+        int maxHeight = fullScreen
+                ? ViewGroup.LayoutParams.MATCH_PARENT
+                : Math.round(getResources().getDisplayMetrics().heightPixels * 0.78f);
+        webView.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, maxHeight));
+
+        AlertDialog.Builder builder =
+                new AlertDialog.Builder(this, R.style.Theme_YourApp_Fullscreen);
+        builder.setView(webView);
+        builder.setPositiveButton(positiveText, (dialog, which) -> dialog.dismiss());
+
+        AlertDialog dialog = builder.create();
+        dialog.setCancelable(true);
+        dialog.setCanceledOnTouchOutside(!fullScreen);
+
+        webView.setWebViewClient(new android.webkit.WebViewClient() {
+            private boolean shown = false;
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                if (shown || isFinishing() || isDestroyed()) {
+                    return;
+                }
+                shown = true;
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) {
+                        return;
+                    }
+                    dialog.show();
+
+                    android.view.Window window = dialog.getWindow();
+                    if (window != null) {
+                        android.view.WindowManager.LayoutParams params = window.getAttributes();
+                        params.width = fullScreen
+                                ? ViewGroup.LayoutParams.MATCH_PARENT
+                                : Math.round(getResources().getDisplayMetrics().widthPixels * 0.90f);
+                        params.height = fullScreen
+                                ? ViewGroup.LayoutParams.MATCH_PARENT
+                                : ViewGroup.LayoutParams.WRAP_CONTENT;
+                        window.setAttributes(params);
+                    }
+
+                    Button positiveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    if (positiveButton != null) {
+                        positiveButton.setTextColor(
+                                getResources().getColor(android.R.color.holo_green_dark));
+                        positiveButton.setTextSize(18);
+                    }
+                });
+            }
+        });
+
+        webView.loadUrl("file:///android_asset/" + assetName);
+        return dialog;
     }
     /**
      * 标记题目为已完成（统一方法）
@@ -2377,5 +3165,109 @@ public class MainActivity extends AppCompatActivity {
         Log.d("MainActivity", "标记完成: " + currentTiku.getName() + " 第 " + (currentQuestionIndex + 1) + " 题");
     }
 
-}
+    // ========== 横屏旋转支持 ==========
 
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+
+        // 保存棋盘状态（Activity不会被销毁，成员变量自动保留，但视图引用会失效）
+        String currentFen = chessView != null ? chessView.getFEN() : null;
+        boolean isFlipped = chessView != null && chessView.isBoardFlipped();
+        String initialFEN = chessView != null ? chessView.getCurrentInitialFEN() : null;
+        int currentSide = chessView != null ? chessView.getCurrentSide() : 1;
+
+        // 暂停计时器
+        pauseTimers();
+
+        // 重新加载布局（系统不会自动切换layout-land，需要手动setContentView）
+        setContentView(R.layout.activity_main);
+
+        // 重新绑定视图引用
+        initViews();
+        setupListeners();
+
+        // 恢复棋盘状态
+        if (chessView != null) {
+            if (currentFen != null) {
+                chessView.setBoardByFENPreserveInitialFEN(currentFen, isFlipped);
+            }
+            if (initialFEN != null && !initialFEN.isEmpty()) {
+                chessView.setCurrentInitialFEN(initialFEN);
+            }
+        }
+
+        // 重新设置棋盘监听
+        setupChessView();
+
+        // 恢复UI显示
+        updateTitle();
+        updateAccuracy();
+        updateTimeDisplay();
+        updateTurnIndicator(currentSide);
+
+        // 恢复诗词显示（tvShiju已在initViews中重新绑定）
+        if (tvShiju != null && poetryList != null && !poetryList.isEmpty()) {
+            // 重新显示随机诗词，避免旋转后诗句消失
+            showRandomPoetry();
+        }
+
+        // 横屏时程序化调整棋盘尺寸
+        if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            adjustBoardSizeForLandscape();
+        }
+
+        // 恢复计时器
+        resumeTimers();
+
+        // 如果AI正在思考，恢复触摸禁用状态
+        if (isPikafishThinking && chessView != null) {
+            chessView.setTouchEnabled(false);
+        }
+
+        Log.d("MainActivity", "配置变更: " + (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE ? "横屏" : "竖屏"));
+    }
+
+    /**
+     * 横屏时程序化调整棋盘尺寸：
+     * - 棋盘高度 = 屏幕高度
+     * - 棋盘宽度 = 高度 × 棋盘宽高比（9:10 或 678:750，由ChessView的activeScheme决定）
+     * - 棋盘中心在屏幕宽度的37%位置
+     */
+    private void adjustBoardSizeForLandscape() {
+        View boardFrame = findViewById(R.id.boardFrame);
+        if (boardFrame == null || chessView == null) return;
+
+        DisplayMetrics dm = new DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getMetrics(dm);
+        int screenWidth = dm.widthPixels;
+        int screenHeight = dm.heightPixels;
+
+        // 从ChessView获取棋盘宽高比
+        float boardAspect = chessView.getBoardAspect();
+
+        int boardHeight = screenHeight;
+        int boardWidth = (int) (boardHeight * boardAspect);
+
+        // 棋盘中心在屏幕37%位置
+        int boardCenterX = (int) (screenWidth * 0.37);
+        int boardLeft = boardCenterX - boardWidth / 2;
+        if (boardLeft < 0) boardLeft = 0;
+
+        // 使用ConstraintLayout.LayoutParams设置尺寸和位置
+        // 只约束start+top+bottom，不约束end，让宽度由params.width决定
+        androidx.constraintlayout.widget.ConstraintLayout.LayoutParams params =
+                (androidx.constraintlayout.widget.ConstraintLayout.LayoutParams) boardFrame.getLayoutParams();
+        params.width = boardWidth;
+        params.height = boardHeight;
+        params.leftMargin = boardLeft;
+        params.startToStart = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        params.endToEnd = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.UNSET;
+        params.topToTop = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        params.bottomToBottom = androidx.constraintlayout.widget.ConstraintLayout.LayoutParams.PARENT_ID;
+        boardFrame.setLayoutParams(params);
+
+        Log.d("MainActivity", "横屏棋盘尺寸: " + boardWidth + "x" + boardHeight + ", left=" + boardLeft);
+    }
+
+}

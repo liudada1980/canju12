@@ -2,5 +2,12 @@
 <resources>
     <style name="Theme.YourApp.Fullscreen" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="android:windowFullscreen">true</item>
+        <item name="android:alertDialogTheme">@style/Theme.YourApp.Dialog</item>
+        <item name="alertDialogTheme">@style/Theme.YourApp.Dialog</item>
+    </style>
+
+    <style name="Theme.YourApp.Dialog" parent="Theme.AppCompat.Light.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_open_dialog</item>
+        <item name="android:backgroundDimAmount">0.28</item>
     </style>
 </resources>

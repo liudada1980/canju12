@@ -1,16 +1,3 @@
-/*
- * 一二残局 - 中国象棋残局刷题软件
- * Copyright (C) 2026 刘霸天-长沙
- *
- * 本程序是自由软件：你可以再分发之和/或依照由自由软件基金会发布的
- * GNU 通用公共许可证修改之，无论是版本 3 许可证，还是（按你的决定）任何以后版都可以。
- *
- * 发布该程序是希望它能有用，但是并无保障;甚至连可销售和符合某个特定的目的都不保证。
- * 请参看 GNU 通用公共许可证，了解详情。
- *
- * 你应该随程序获得一份 GNU 通用公共许可证的复本。如果没有，请看 <https://www.gnu.org/licenses/>。
- */
-
 package com.canju12.zhuzicanju;
 
 import android.content.Context;
@@ -23,29 +10,48 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class TikuManager {
 
     private static final String TAG = "TikuManager";
-    private Context context;
-    private List<TikuData> tikuList = new ArrayList<>();
+    private static final long MAX_TIKU_FILE_BYTES = 16L * 1024L * 1024L;
+
+    private final Context context;
+    private final List<TikuData> internalTikuList = new ArrayList<>();
+    private final List<TikuData> externalTikuList = new ArrayList<>();
+    private final Map<String, ExternalTikuCacheEntry> externalTikuCache = new HashMap<>();
+    private final List<TikuData> tikuList = new ArrayList<>();
     private TikuData currentTiku = null;
+
+    private static final class ExternalTikuCacheEntry {
+        final long length;
+        final long lastModified;
+        final TikuData data;
+
+        ExternalTikuCacheEntry(long length, long lastModified, TikuData data) {
+            this.length = length;
+            this.lastModified = lastModified;
+            this.data = data;
+        }
+
+        boolean matches(File file) {
+            return file.length() == length && file.lastModified() == lastModified;
+        }
+    }
 
     public TikuManager(Context context) {
         this.context = context;
-        // 鍒濆鍖栫洰褰曪紙鍒涘缓蹇呰鐨勬枃浠跺す锛?
         initTikuDirectory();
-        // 鍔犺浇鎵€鏈夐搴擄紙鍏?assets锛屽啀澶栭儴瀛樺偍锛?
         loadAllTiku();
     }
 
-    /**
-     * 鍒濆鍖栭搴撶洰褰曪紙澶栭儴瀛樺偍锛?
-     */
     private void initTikuDirectory() {
         try {
-            // 澶栭儴瀛樺偍鏍圭洰褰曚笅鐨?canju12/tiku
             File externalDir = Environment.getExternalStorageDirectory();
             File canju12Dir = new File(externalDir, "canju12");
             if (!canju12Dir.exists()) {
@@ -55,185 +61,180 @@ public class TikuManager {
             File tikuDir = new File(canju12Dir, "tiku");
             if (!tikuDir.exists()) {
                 tikuDir.mkdirs();
-                Log.d(TAG, "鍒涘缓澶栭儴棰樺簱鐩綍: " + tikuDir.getAbsolutePath());
+                Log.d(TAG, "创建外置题库目录: " + tikuDir.getAbsolutePath());
             }
-
         } catch (Exception e) {
-            Log.e(TAG, "鍒濆鍖栭搴撶洰褰曞け璐? " + e.getMessage());
+            Log.e(TAG, "初始化题库目录失败: " + e.getMessage());
         }
     }
 
-    /**
-     * 鍔犺浇鎵€鏈夐搴擄紙鍏?assets 鍐呯疆锛屽啀 assets 闅愯棌锛屽啀澶栭儴瀛樺偍锛?
-     */
-    public void loadAllTiku() {
-        tikuList.clear();
+    public synchronized void loadAllTiku() {
+        internalTikuList.clear();
+        externalTikuList.clear();
 
-        // 1. 浠?assets/NeizhiTiku 鍔犺浇棰樺簱
-        loadTikuFromAssets("NeizhiTiku");
+        loadTikuFromAssets("NeizhiTiku", internalTikuList);
+        loadTikuFromAssets("YincangTiku", internalTikuList);
+        loadTikuFromExternal(externalTikuList);
 
-        // 2. 浠?assets/YincangTiku 鍔犺浇棰樺簱锛堟槸鍚﹀睍绀虹敱澶栭儴鎺у埗锛?
-        loadTikuFromAssets("YincangTiku");
-
-        // 3. 浠庡閮ㄥ瓨鍌ㄥ姞杞介搴?
-        loadTikuFromExternal();
-
+        rebuildCombinedList();
         Log.d(TAG, "共加载 " + tikuList.size() + " 个题库");
     }
 
-    /**
-     * 浠?assets 鐨勬寚瀹氭枃浠跺す鍔犺浇棰樺簱
-     */
-    private void loadTikuFromAssets(String folder) {
+    public synchronized void refreshExternalTiku() {
+        externalTikuList.clear();
+        loadTikuFromExternal(externalTikuList);
+        rebuildCombinedList();
+        Log.d(TAG, "刷新外置题库完成，共 " + tikuList.size() + " 个题库");
+    }
+
+    private void rebuildCombinedList() {
+        tikuList.clear();
+        tikuList.addAll(internalTikuList);
+        tikuList.addAll(externalTikuList);
+    }
+
+    private void loadTikuFromAssets(String folder, List<TikuData> target) {
         try {
             String[] files = context.getAssets().list(folder);
-            if (files != null) {
-                for (String fileName : files) {
-                    if (fileName.endsWith(".txt")) {
-                        // 妫€鏌ユ槸鍚﹀凡缁忓湪鍒楄〃涓紙閬垮厤閲嶅锛?
-                        if (isTikuExists(fileName)) {
-                            Log.d(TAG, "棰樺簱宸插瓨鍦紝璺宠繃: " + fileName);
-                            continue;
-                        }
+            if (files == null) {
+                return;
+            }
 
-                        String name = fileName.replace(".txt", "");
-                        TikuData tiku = new TikuData(name, fileName);
-                        tiku.setFromYincang(folder.equals("YincangTiku"));
-                        loadTikuFromAssetsFile(tiku, folder);
-                        tikuList.add(tiku);
-                        Log.d(TAG, "从assets加载题库: " + name + ", 共 " + tiku.getTotalCount() + " 题");
-                    }
+            for (String fileName : files) {
+                if (!fileName.endsWith(".txt") || containsFileName(fileName)) {
+                    continue;
                 }
+
+                String name = fileName.replace(".txt", "");
+                TikuData tiku = new TikuData(name, fileName);
+                tiku.setFromYincang("YincangTiku".equals(folder));
+                loadTikuFromAssetsFile(tiku, folder);
+                target.add(tiku);
+                Log.d(TAG, "加载内置题库: " + name + ", 共 " + tiku.getTotalCount() + " 题");
             }
         } catch (Exception e) {
-            Log.e(TAG, "浠巃ssets鍔犺浇棰樺簱澶辫触: " + e.getMessage());
+            Log.e(TAG, "加载 assets 题库失败: " + e.getMessage());
         }
     }
 
-    /**
-     * 浠?assets 鍔犺浇鍗曚釜棰樺簱鏂囦欢
-     */
     private void loadTikuFromAssetsFile(TikuData tiku, String folder) {
-        List<String> fenList = new ArrayList<>();
-        List<String> initialFENList = new ArrayList<>();
+        tiku.clearFenData();
 
-        try {
-            InputStream is = context.getAssets().open(folder + "/" + tiku.getFileName());
-            BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+        try (InputStream is = context.getAssets().open(folder + "/" + tiku.getFileName());
+             BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))) {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                line = line.trim();
+                if (line.length() > 4096) {
+                    Log.w(TAG, "skip oversized bundled tiku line: " + tiku.getFileName());
+                    continue;
+                }
+                line = stripBom(line).trim();
                 if (!line.isEmpty() && !line.startsWith("#") && !line.startsWith("//")) {
-                    fenList.add(line);
-                    initialFENList.add(line);
+                    tiku.addFenLine(line);
                 }
             }
-
-            reader.close();
-            is.close();
-            tiku.setFenList(fenList);
-            tiku.setInitialFENList(initialFENList);
-
         } catch (Exception e) {
-            Log.e(TAG, "鍔犺浇assets棰樺簱鏂囦欢澶辫触: " + tiku.getFileName() + " - " + e.getMessage());
+            Log.e(TAG, "加载 assets 题库文件失败: " + tiku.getFileName() + " - " + e.getMessage());
         }
     }
 
-    /**
-     * 浠庡閮ㄥ瓨鍌ㄥ姞杞介搴?
-     */
-    private void loadTikuFromExternal() {
+    private void loadTikuFromExternal(List<TikuData> target) {
         try {
             File externalDir = Environment.getExternalStorageDirectory();
             File canju12Dir = new File(externalDir, "canju12");
             File tikuDir = new File(canju12Dir, "tiku");
 
             if (!tikuDir.exists()) {
-                Log.d(TAG, "澶栭儴棰樺簱鐩綍涓嶅瓨鍦? " + tikuDir.getAbsolutePath());
+                externalTikuCache.clear();
                 return;
             }
 
             File[] files = tikuDir.listFiles();
             if (files == null || files.length == 0) {
-                Log.d(TAG, "澶栭儴棰樺簱鐩綍涓虹┖");
+                externalTikuCache.clear();
                 return;
             }
 
+            List<File> tikuFiles = new ArrayList<>();
             for (File file : files) {
-                if (file.isFile() && file.getName().endsWith(".txt")) {
-                    // 妫€鏌ユ槸鍚﹀凡缁忓湪鍒楄〃涓紙閬垮厤閲嶅锛?
-                    if (isTikuExists(file.getName())) {
-                        Log.d(TAG, "棰樺簱宸插瓨鍦紝璺宠繃: " + file.getName());
-                        continue;
-                    }
-
-                    String name = file.getName().replace(".txt", "");
-                    TikuData tiku = new TikuData(name, file.getName());
-                    loadTikuFromExternalFile(tiku, file);
-                    tikuList.add(tiku);
-                    Log.d(TAG, "从外部加载题库: " + name + ", 共 " + tiku.getTotalCount() + " 题");
+                if (file != null && file.isFile() && file.getName().endsWith(".txt")
+                        && !containsFileName(file.getName())
+                        && file.length() <= MAX_TIKU_FILE_BYTES) {
+                    tikuFiles.add(file);
                 }
             }
+            Collections.sort(tikuFiles, Comparator.comparing(File::getName));
+            Map<String, Boolean> currentFiles = new HashMap<>();
 
+            for (File file : tikuFiles) {
+                currentFiles.put(file.getName(), Boolean.TRUE);
+                ExternalTikuCacheEntry cached = externalTikuCache.get(file.getName());
+                TikuData tiku;
+                if (cached != null && cached.matches(file)) {
+                    tiku = cached.data;
+                    Log.d(TAG, "复用外置题库缓存: " + file.getName());
+                } else {
+                    String name = file.getName().replace(".txt", "");
+                    tiku = new TikuData(name, file.getName());
+                    loadTikuFromExternalFile(tiku, file);
+                    externalTikuCache.put(file.getName(),
+                            new ExternalTikuCacheEntry(file.length(), file.lastModified(), tiku));
+                }
+                target.add(tiku);
+                Log.d(TAG, "加载外置题库: " + tiku.getName() + ", 共 " + tiku.getTotalCount() + " 题");
+            }
+
+            externalTikuCache.keySet().removeIf(name -> !currentFiles.containsKey(name));
         } catch (Exception e) {
-            Log.e(TAG, "浠庡閮ㄥ瓨鍌ㄥ姞杞介搴撳け璐? " + e.getMessage());
+            Log.e(TAG, "加载外置题库失败: " + e.getMessage());
         }
     }
 
-    /**
-     * 浠庡閮ㄥ瓨鍌ㄥ姞杞藉崟涓搴撴枃浠?
-     */
     private void loadTikuFromExternalFile(TikuData tiku, File file) {
-        List<String> fenList = new ArrayList<>();
-        List<String> initialFENList = new ArrayList<>();
+        tiku.clearFenData();
 
-        try {
-            FileInputStream fis = new FileInputStream(file);
-            BufferedReader reader = new BufferedReader(new InputStreamReader(fis, "UTF-8"));
+        try (FileInputStream fis = new FileInputStream(file);
+             BufferedReader reader = new BufferedReader(new InputStreamReader(fis, "UTF-8"))) {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                line = line.trim();
+                if (line.length() > 4096) {
+                    Log.w(TAG, "skip oversized external tiku line: " + file.getName());
+                    continue;
+                }
+                line = stripBom(line).trim();
                 if (!line.isEmpty() && !line.startsWith("#") && !line.startsWith("//")) {
-                    fenList.add(line);
-                    initialFENList.add(line);
+                    tiku.addFenLine(line);
                 }
             }
-
-            reader.close();
-            fis.close();
-            tiku.setFenList(fenList);
-            tiku.setInitialFENList(initialFENList);
-
         } catch (Exception e) {
-            Log.e(TAG, "鍔犺浇澶栭儴棰樺簱鏂囦欢澶辫触: " + tiku.getFileName() + " - " + e.getMessage());
+            Log.e(TAG, "加载外置题库文件失败: " + tiku.getFileName() + " - " + e.getMessage());
         }
     }
 
-    /**
-     * 妫€鏌ラ搴撴槸鍚﹀凡瀛樺湪锛堟寜鏂囦欢鍚嶏級
-     */
-    private boolean isTikuExists(String fileName) {
-        for (TikuData tiku : tikuList) {
-            if (tiku.getFileName().equals(fileName)) {
-                return true;
-            }
+    private boolean containsFileName(String fileName) {
+        for (TikuData tiku : internalTikuList) {
+            if (fileName.equals(tiku.getFileName())) return true;
+        }
+        for (TikuData tiku : externalTikuList) {
+            if (fileName.equals(tiku.getFileName())) return true;
         }
         return false;
     }
 
-    /**
-     * 鑾峰彇鎵€鏈夐搴撳垪琛?
-     */
-    public List<TikuData> getTikuList() {
-        return tikuList;
+    private String stripBom(String value) {
+        if (value != null && !value.isEmpty() && value.charAt(0) == '\uFEFF') {
+            return value.substring(1);
+        }
+        return value;
     }
 
-    /**
-     * 鏍规嵁鍚嶇О鑾峰彇棰樺簱
-     */
-    public TikuData getTikuByName(String name) {
+    public synchronized List<TikuData> getTikuList() {
+        return new ArrayList<>(tikuList);
+    }
+
+    public synchronized TikuData getTikuByName(String name) {
         for (TikuData tiku : tikuList) {
             if (tiku.getName().equals(name)) {
                 return tiku;
@@ -241,21 +242,31 @@ public class TikuManager {
         }
         return null;
     }
-    /**
-     * 鑾峰彇褰撳墠棰樺簱鐨勪笅涓€棰楩EN
-     * @return 涓嬩竴棰樼殑FEN锛屽鏋滄病鏈夊垯杩斿洖null
-     */
+
+    public TikuData getCurrentTiku() {
+        return currentTiku;
+    }
+
+    public void setCurrentTiku(TikuData tiku) {
+        this.currentTiku = tiku;
+    }
+
+    public void reloadTiku() {
+        loadAllTiku();
+    }
+
+    public void saveProgress(TikuData tiku) {
+        // Deprecated: use ProgressManager.
+    }
+
     public String getNextFEN() {
         if (currentTiku == null) {
-            Log.e(TAG, "褰撳墠棰樺簱涓虹┖");
+            Log.e(TAG, "当前题库为空");
             return null;
         }
         return currentTiku.getNextFEN();
     }
 
-    /**
-     * 鑾峰彇褰撳墠棰樺簱鐨勫綋鍓嶇储寮?
-     */
     public int getCurrentIndex() {
         if (currentTiku == null) {
             return 0;
@@ -263,9 +274,6 @@ public class TikuManager {
         return currentTiku.getCurrentIndex();
     }
 
-    /**
-     * 鑾峰彇褰撳墠棰樺簱鐨勬€婚鏁?
-     */
     public int getTotalCount() {
         if (currentTiku == null) {
             return 0;
@@ -273,43 +281,10 @@ public class TikuManager {
         return currentTiku.getTotalCount();
     }
 
-    /**
-     * 鑾峰彇褰撳墠棰樺簱鐨勫悕绉?
-     */
     public String getCurrentTikuName() {
         if (currentTiku == null) {
-            return "鏈€夋嫨棰樺簱";
+            return "未选择题库";
         }
         return currentTiku.getName();
     }
-    /**
-     * 璁剧疆褰撳墠棰樺簱
-     */
-    public void setCurrentTiku(TikuData tiku) {
-        this.currentTiku = tiku;
-    }
-
-    /**
-     * 鑾峰彇褰撳墠棰樺簱
-     */
-    public TikuData getCurrentTiku() {
-        return currentTiku;
-    }
-
-    /**
-     * 鍒锋柊棰樺簱
-     */
-    public void reloadTiku() {
-        loadAllTiku();
-    }
-    /**
-     * 淇濆瓨棰樺簱杩涘害
-     * @param tiku 瑕佷繚瀛樿繘搴︾殑棰樺簱
-     */
-    public void saveProgress(TikuData tiku) {
-        // 宸插純鐢紝鐢?ProgressManager 绠＄悊
-    }
-
-
-
 }

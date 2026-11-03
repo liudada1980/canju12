@@ -18,10 +18,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class TikuData implements Serializable {
+    private static final int MAX_FEN_LINE_LENGTH = 4096;
     private String name;           // 题库名称（不含扩展名）
     private String fileName;       // 文件名
     private List<String> rawFenList;       // 原始FEN（含2#前缀，如果有的话）
     private List<String> fenList;  // 所有题目FEN
+    private List<String> titleList; // 每道题标题（从FEN尾部提取）
     private List<Boolean> doneList; // 每道题是否已完成
     private List<String> initialFENList; // 每道题的初始FEN
     private List<Boolean> flippedList;     // 记录每道题是否翻转
@@ -33,6 +35,7 @@ public class TikuData implements Serializable {
         this.fileName = fileName;
         this.fenList = new ArrayList<>();
         this.rawFenList = new ArrayList<>();
+        this.titleList = new ArrayList<>();
         this.doneList = new ArrayList<>();
         this.initialFENList = new ArrayList<>();
         this.flippedList = new ArrayList<>();
@@ -60,29 +63,116 @@ public class TikuData implements Serializable {
     }
 
     public void setFenList(List<String> fenList) {
+        clearFenData();
+        if (fenList == null) {
+            return;
+        }
+        for (String fen : fenList) {
+            addFenLine(fen);
+        }
+    }
+
+    void clearFenData() {
         this.fenList = new ArrayList<>();
         this.rawFenList = new ArrayList<>();
+        this.titleList = new ArrayList<>();
         this.initialFENList = new ArrayList<>();
         this.doneList = new ArrayList<>();
         this.flippedList = new ArrayList<>();
+        this.currentIndex = 0;
+    }
 
-        for (String fen : fenList) {
-            String cleanFen = fen;
-            String rawFen = fen;  // 保存原始FEN
-            boolean isFlipped = false;
+    void addFenLine(String fen) {
+        if (fen == null || fen.length() > MAX_FEN_LINE_LENGTH) {
+            return;
+        }
+        String rawFen = stripBom(fen);
+        ParsedFen parsed = parseFenLine(fen);
+        String cleanFen = parsed.fen;
+        String title = parsed.title;
+        boolean isFlipped = parsed.isFlipped;
 
-            // 检测是否有 2# 前缀
-            if (fen.startsWith("2#")) {
-                cleanFen = fen.substring(2);  // 去掉 "2#" 前缀
-                isFlipped = true;
+        this.fenList.add(cleanFen);
+        this.rawFenList.add(rawFen);
+        this.titleList.add(title);
+        this.initialFENList.add(cleanFen);
+        this.doneList.add(false);
+        this.flippedList.add(isFlipped);
+    }
+
+    private static class ParsedFen {
+        final String fen;
+        final String title;
+        final boolean isFlipped;
+        ParsedFen(String fen, String title, boolean isFlipped) {
+            this.fen = fen;
+            this.title = title;
+            this.isFlipped = isFlipped;
+        }
+    }
+
+    private ParsedFen parseFenLine(String line) {
+        if (line == null) {
+            return new ParsedFen("", "", false);
+        }
+
+        String value = stripBom(line);
+        int length = value.length();
+        int position = 0;
+        int tokenIndex = 0;
+        int titleStart = -1;
+        boolean isFlipped = false;
+        StringBuilder fenBuilder = new StringBuilder(Math.min(length, 96));
+
+        // 扫描需要的字段，避免 String.split() 创建正则对象和临时字符串数组。
+        while (position < length) {
+            while (position < length && Character.isWhitespace(value.charAt(position))) {
+                position++;
+            }
+            if (position >= length) {
+                break;
             }
 
-            this.fenList.add(cleanFen);
-            this.rawFenList.add(rawFen);      // 保存原始FEN（含前缀）
-            this.initialFENList.add(cleanFen);
-            this.doneList.add(false);
-            this.flippedList.add(isFlipped);
+            int tokenStart = position;
+            while (position < length && !Character.isWhitespace(value.charAt(position))) {
+                position++;
+            }
+            int tokenEnd = position;
+
+            if (tokenIndex == 0) {
+                isFlipped = value.startsWith("2#", tokenStart);
+                int fenStart = isFlipped ? tokenStart + 2 : tokenStart;
+                if (fenStart < tokenEnd) {
+                    fenBuilder.append(value, fenStart, tokenEnd);
+                }
+            } else if (tokenIndex < 6) {
+                fenBuilder.append(' ').append(value, tokenStart, tokenEnd);
+            } else if (titleStart < 0) {
+                titleStart = findFirstHan(value, tokenStart, tokenEnd);
+            }
+            tokenIndex++;
         }
+
+        String title = titleStart >= 0 ? value.substring(titleStart).trim() : "";
+        return new ParsedFen(fenBuilder.toString(), title, isFlipped);
+    }
+
+    private int findFirstHan(String value, int start, int end) {
+        for (int i = start; i < end;) {
+            int cp = value.codePointAt(i);
+            if (Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN) {
+                return i;
+            }
+            i += Character.charCount(cp);
+        }
+        return -1;
+    }
+
+    private String stripBom(String value) {
+        if (value != null && !value.isEmpty() && value.charAt(0) == '\uFEFF') {
+            return value.substring(1);
+        }
+        return value;
     }
     /**
      * 获取某道题的原始FEN（含2#前缀）
@@ -110,6 +200,13 @@ public class TikuData implements Serializable {
     public String getCurrentRawFEN() {
         return getRawFEN(currentIndex);
     }
+
+    public String getQuestionTitle(int index) {
+        if (titleList != null && index >= 0 && index < titleList.size()) {
+            return titleList.get(index);
+        }
+        return "";
+    }
     public List<Boolean> getDoneList() {
         return doneList;
     }
@@ -136,7 +233,13 @@ public class TikuData implements Serializable {
     }
 
     public void setInitialFENList(List<String> initialFENList) {
-        this.initialFENList = initialFENList;
+        this.initialFENList = new ArrayList<>();
+        if (initialFENList == null) {
+            return;
+        }
+        for (String fenLine : initialFENList) {
+            this.initialFENList.add(parseFenLine(fenLine).fen);
+        }
     }
 
     public int getCurrentIndex() {

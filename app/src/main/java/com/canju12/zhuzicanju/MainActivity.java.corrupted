@@ -505,7 +505,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void displaySpecialMessage() {
-        String text = "刘霸天为您加油！";
+        String text = "一二残局";
         animateText(tvShiju, text);
     }
 
@@ -802,7 +802,7 @@ public class MainActivity extends AppCompatActivity {
     private void showCurrentDate() {
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy年MM月dd日", java.util.Locale.CHINA);
         String currentDate = sdf.format(new java.util.Date());
-        tvAccuracy.setText("🔥刘霸天为您加油！🔥🔥🔥" + currentDate + "🔥🔥");
+        tvAccuracy.setText("🔥一二残局🔥🔥" + currentDate + "🔥🔥");
     }
 
 
@@ -1552,7 +1552,7 @@ public class MainActivity extends AppCompatActivity {
             addToWrongBook(rawFen);
             // ===================================
 
-            Toast.makeText(this, "标记为：不会 - 已记录到错题本", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "不会 - 已记录到错题本！", Toast.LENGTH_SHORT).show();
             nextQuestion();
         } else {
             Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
@@ -1603,7 +1603,7 @@ public class MainActivity extends AppCompatActivity {
             markQuestionCompleted();
             // ===========================
             updateAccuracy();
-            Toast.makeText(this, "标记为：已会", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "已会，载入下一题！", Toast.LENGTH_SHORT).show();
             nextQuestion();
         } else {
             Toast.makeText(this, "未选择题库", Toast.LENGTH_SHORT).show();
@@ -1958,14 +1958,14 @@ public class MainActivity extends AppCompatActivity {
         // 检查错题本最后一行是否相同（简单去重）
         String lastLine = readLastLineOfWrongBook();
         if (rawFen.equals(lastLine)) {
-            Log.d("MainActivity", "错题本中已存在，跳过");
-            Toast.makeText(MainActivity.this, "错题本中已存在", Toast.LENGTH_SHORT).show();
+            Log.d("MainActivity", "错题本中已存在，跳过！");
+            Toast.makeText(MainActivity.this, "错题本中已存在！", Toast.LENGTH_SHORT).show();
             return;
         }
 
         addToWrongBook(rawFen);
         Log.d("MainActivity", "已加入错题本: " + rawFen);
-        Toast.makeText(MainActivity.this, "已记录到错题本", Toast.LENGTH_SHORT).show();
+        Toast.makeText(MainActivity.this, "已记录到错题本！", Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -2021,7 +2021,7 @@ public class MainActivity extends AppCompatActivity {
     /** 显示隐藏题库解锁弹窗 */
     private void showUnlockDialog() {
         TextView msg = new TextView(this);
-        msg.setText("🔥🔥刘霸天为您加油！🔥🔥\n☁️☁️云库为您加油！☁️☁️\n🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋");
+        msg.setText("🔥一二残局🔥🔥\n☁️☁️云库为您加油！☁️☁️\n🐟🐠🐡皮卡鱼为您加油！🦈🎏🐬🐳🐋");
         msg.setTextSize(16);
         msg.setGravity(android.view.Gravity.CENTER);
         msg.setPadding(40, 20, 40, 20);
